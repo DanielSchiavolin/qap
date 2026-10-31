@@ -84,3 +84,18 @@ function dataHora(ms) {
   const d = new Date(ms);
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${horaCurta(ms)}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
+
+// Versão nova publicada: baixa os arquivos de novo (sem a cópia guardada do navegador) e recarrega.
+// Só tenta uma vez a cada 2 min por versão, para nunca ficar recarregando sem parar.
+// Devolve false quando já tentou há pouco.
+function recarregarParaVersao(v, arquivos) {
+  const chave = 'qapRecarregou';
+  try {
+    const ultima = JSON.parse(sessionStorage.getItem(chave) || 'null');
+    if (ultima && ultima.v === v && Date.now() - ultima.em < 120000) return false;
+    sessionStorage.setItem(chave, JSON.stringify({ v, em: Date.now() }));
+  } catch (e) { /* sem sessionStorage: segue */ }
+  Promise.all(arquivos.map(f => fetch(f, { cache: 'reload' }).catch(() => null)))
+    .then(() => setTimeout(() => location.reload(), 800));
+  return true;
+}

@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.4';
+const APP_VERSION = '2026-10-31.5';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 
@@ -533,9 +533,10 @@ class PainelApp {
     try {
       const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
       const { v } = await r.json();
-      if (!v || v === APP_VERSION || document.querySelector('.modal-overlay.active')) return;
+      if (!v || v === APP_VERSION || this.atualizando || document.querySelector('.modal-overlay.active')) return;
+      if (!recarregarParaVersao(v, ['index.html', 'painel.js', 'style.css', 'config.js', 'escala.js', 'qap-regras.js', 'auth-gate.js'])) return;
+      this.atualizando = true;
       this.toast('⬆️ Nova versão do app — atualizando…');
-      setTimeout(() => location.reload(), 800);
     } catch (e) { /* sem internet */ }
   }
 

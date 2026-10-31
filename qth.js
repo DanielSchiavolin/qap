@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.4';
+const APP_VERSION = '2026-10-31.5';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -611,7 +611,7 @@ class QthApp {
       const { v } = await r.json();
       if (!v || v === APP_VERSION || this.cap || this.enviandoFila) return;
       if ((await Fila.todos()).length) return; // nunca recarregar com envio pendente
-      location.reload();
+      recarregarParaVersao(v, ['qth.html', 'qth.js', 'style.css', 'config.js']);
     } catch (e) { /* sem internet */ }
   }
 
