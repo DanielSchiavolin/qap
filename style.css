@@ -147,14 +147,6 @@ label.campo { display: block; font-size: 0.8rem; color: var(--muted); margin: 12
 .midia img, .midia video { display: block; max-width: 100%; max-height: 360px; pointer-events: auto; }
 .midia audio { width: 260px; max-width: 100%; }
 .midia.midia-audio { min-height: 0; padding: 8px; background: rgba(255, 255, 255, 0.05); }
-/* Marca d'água: quem está vendo + data/hora, repetida sobre a mídia */
-.marca {
-  position: absolute; inset: 0; pointer-events: none; display: flex; flex-wrap: wrap; align-content: space-around;
-  justify-content: space-around; transform: rotate(-20deg) scale(1.4); opacity: 0.28;
-  font-size: 0.7rem; font-weight: 800; color: #fff; text-shadow: 0 0 2px #000; overflow: hidden;
-}
-.marca span { padding: 10px 14px; white-space: nowrap; }
-.midia-video .marca { bottom: 40px; }
 
 .lista-qras { display: flex; flex-direction: column; gap: 6px; }
 .qra-linha { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--card-bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }

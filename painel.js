@@ -1,15 +1,14 @@
 // ============================================================
 // Front Security - App QAP: painel da supervisão
 // Postos em turno agora, último QAP de cada um, alerta (pisca + som + notificação) quando o QAP
-// atrasa, feed do dia com foto/vídeo/áudio (marca d'água) e o link + PINs para os QRAs.
+// atrasa, feed do dia com foto/vídeo/áudio e o link + PINs para os QRAs.
 // Banco: front-security-coberturas (posts, qras, folgas, coberturas + nó procedimentos/).
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.2';
+const APP_VERSION = '2026-10-31.3';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
-const MARCA_REPETICOES = 18;
 
 // ===== Banco: Firebase de verdade ou o falso do teste local (?mock=1) =====
 
@@ -127,7 +126,6 @@ class PainelApp {
     this.postoAberto = null;
     this.diaFeed = 0;
     this.renderAgendado = false;
-    try { this.quem = localStorage.getItem('qapQuemVe') || ''; } catch (e) { this.quem = ''; }
   }
 
   agora() { return Date.now() + (this.banco.offset || 0); }
@@ -154,7 +152,6 @@ class PainelApp {
     setInterval(() => this.relogio(), 1000);
     this.checarVersao();
     setInterval(() => this.checarVersao(), 5 * 60000);
-    if (!this.quem) this.abrirModal('modal-quem');
     this.atualizarBotoes();
   }
 
@@ -379,7 +376,7 @@ class PainelApp {
     const dia = addDays(diaOperacional(this.agora()), -this.diaFeed);
     const evs = eventosDoPosto({ [dia]: this.eventosPorDia[dia] || {} }, id).reverse();
     // só redesenha quando chega envio novo deste posto (não reinicia vídeo/áudio tocando)
-    const assinatura = `${id}|${dia}|${evs.map(e => e.id).join(',')}|${this.quem}`;
+    const assinatura = `${id}|${dia}|${evs.map(e => e.id).join(',')}`;
     if (assinatura === this.feedAssinatura) return;
     this.feedAssinatura = assinatura;
     const el = document.getElementById('mp-feed');
@@ -401,7 +398,7 @@ class PainelApp {
     this.carregarMidias();
   }
 
-  // Mídia só pelo backend, com o login da equipe; mostrada com marca d'água
+  // Mídia só pelo backend, com o login da equipe
   async carregarMidias() {
     const caixas = Array.from(document.querySelectorAll('#mp-feed [data-midia]'));
     for (const caixa of caixas) {
@@ -420,16 +417,11 @@ class PainelApp {
         const tag = tipo === 'foto' ? `<img src="${url}" alt="foto do QAP" draggable="false">`
           : tipo === 'video' ? `<video src="${url}" controls playsinline controlslist="nodownload noplaybackrate" disablepictureinpicture></video>`
             : `<audio src="${url}" controls controlslist="nodownload"></audio>`;
-        caixa.innerHTML = tag + (tipo === 'audio' ? '' : this.marcaDagua());
+        caixa.innerHTML = tag;
       } catch (err) {
         if (caixa.isConnected) caixa.textContent = `⚠️ ${qapErroTexto(err)}`;
       }
     }
-  }
-
-  marcaDagua() {
-    const txt = escHtml(`${this.quem || 'sem nome'} · ${dataHora(this.agora())} · FRONT SECURITY`);
-    return `<div class="marca">${Array(MARCA_REPETICOES).fill(`<span>${txt}</span>`).join('')}</div>`;
   }
 
   // ----- PINs -----
@@ -564,7 +556,7 @@ class PainelApp {
       if (Notification.permission === 'granted') this.toast('🔔 Você vai receber aviso de QAP atrasado enquanto este painel estiver aberto.', 'success');
     });
     document.querySelectorAll('[data-fechar]').forEach(b => b.addEventListener('click', () => this.fecharModal(b)));
-    document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if (e.target === m && m.id !== 'modal-quem') this.fecharModal(m); }));
+    document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if (e.target === m) this.fecharModal(m); }));
     document.getElementById('cfg-salvar').addEventListener('click', () => this.salvarConfig());
     document.getElementById('cfg-ativo').addEventListener('change', () => this.salvarConfig());
     document.getElementById('cfg-novo-link').addEventListener('click', () => this.novoLink());
@@ -580,13 +572,6 @@ class PainelApp {
       const r = e.target.closest('[data-sem-pin]');
       if (g) this.gerarPin(g.dataset.pin);
       if (r) this.removerPin(r.dataset.semPin);
-    });
-    document.getElementById('quem-salvar').addEventListener('click', () => {
-      const nome = document.getElementById('quem-nome').value.trim();
-      if (!nome) return;
-      this.quem = nome;
-      try { localStorage.setItem('qapQuemVe', nome); } catch (e) {}
-      document.getElementById('modal-quem').classList.remove('active');
     });
     // sem menu de "salvar imagem/vídeo como"
     document.addEventListener('contextmenu', e => { if (e.target.closest('.midia')) e.preventDefault(); });

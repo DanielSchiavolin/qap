@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.2';
+const APP_VERSION = '2026-10-31.3';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -163,18 +163,16 @@ function blobParaBase64(blob) {
   });
 }
 
-// Faixa com posto, QRA, data/hora do servidor e localização, gravada dentro da foto/vídeo
-function desenharCarimbo(ctx, w, h, linhas) {
+// Só a data/hora do servidor, no canto de baixo, gravada dentro da foto/vídeo
+// (sem empresa, posto, QRA ou localização: isso fica no registro, não na imagem)
+function desenharCarimbo(ctx, w, h, texto) {
   const fs = Math.max(13, Math.round(w / 42));
-  const alt = fs * 2.7;
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.fillRect(0, h - alt, w, alt);
-  ctx.fillStyle = '#F5A623';
-  ctx.font = `800 ${fs}px Inter, sans-serif`;
-  ctx.fillText(linhas[0], fs * 0.6, h - fs * 1.5);
+  ctx.font = `700 ${fs}px Inter, sans-serif`;
+  const larg = ctx.measureText(texto).width + fs;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.fillRect(w - larg, h - fs * 1.6, larg, fs * 1.6);
   ctx.fillStyle = '#fff';
-  ctx.font = `600 ${Math.round(fs * 0.85)}px Inter, sans-serif`;
-  ctx.fillText(linhas[1], fs * 0.6, h - fs * 0.5);
+  ctx.fillText(texto, w - larg + fs * 0.5, h - fs * 0.5);
 }
 
 // Desenha o vídeo da câmera cortado para preencher w x h (sem distorcer)
@@ -414,11 +412,7 @@ class QthApp {
   }
 
   carimbo() {
-    const l = this.cap && this.cap.local;
-    return [
-      `FRONT SECURITY · ${this.posto.nome}`,
-      `${this.sessao.qraNome} · ${dataHora(this.agora())}${l ? ` · ${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}` : ''}`,
-    ];
+    return dataHora(this.agora());
   }
 
   podeAnexar(tipo) {

@@ -2,7 +2,7 @@
 
 O QAP sai do grupo de WhatsApp e passa a ser enviado pela URL do posto:
 - **QRA** (`qth.html?p=<posto>&k=<chave>`): entra com nome + PIN e envia QAP com **foto ou vídeo de 15 s tirados na hora** (sem galeria), **áudio de até 15 s**, observação e localização. A foto e o vídeo saem com uma faixa com posto, QRA, data/hora do servidor e coordenadas. O QRA não vê mídia de ninguém. Sem internet, o envio fica guardado no celular e sai sozinho depois.
-- **Supervisão** (`index.html`, senha da equipe): cada posto em turno com o último QAP e o horário do próximo. Quando atrasa (intervalo + tolerância), o card **pisca**, **toca som** e sai **notificação** no navegador. Também mostra 3/6 que passou de 1h, o feed do dia com foto/vídeo/áudio (com marca d'água de quem está vendo), o link de cada posto e os PINs dos QRAs.
+- **Supervisão** (`index.html`, senha da equipe): cada posto em turno com o último QAP e o horário do próximo. Quando atrasa (intervalo + tolerância), o card **pisca**, **toca som** e sai **notificação** no navegador. Também mostra 3/6 que passou de 1h, o feed do dia com foto/vídeo/áudio, o link de cada posto e os PINs dos QRAs.
 
 Mesma conta do QAP do fechamento (`../Limpar_WhatsApp/financeiro/falhas_qap.ps1`): QAP a cada 60 min, tolerância de 15 min, cada hora inteira sem QAP = 1h de falha, 3/6 = 1h. Só vale como QAP o envio com foto ou vídeo (ou a volta do 3/6).
 
@@ -42,7 +42,7 @@ Comece por 1 ou 2 postos. A cobrança vem **desligada** em todos, para nenhum po
 
 ## Limites da fase 1 (o que ainda não faz)
 - **O alerta só sai com o painel aberto** em algum aparelho da supervisão (aba aberta; pode ficar em segundo plano). Alerta com tudo fechado (Telegram/push) é a fase 2.
-- **Print:** navegador não bloqueia print. Nesta fase: o QRA não vê mídia nenhuma, a mídia é privada no Drive e o painel mostra marca d'água com quem está vendo. O bloqueio de verdade só existe no app Android instalado (fase 5).
+- **Print:** navegador não bloqueia print. Nesta fase: o QRA não vê mídia nenhuma, a mídia é privada no Drive. A foto/vídeo leva gravada só a data/hora (sem empresa, posto ou nome). O bloqueio de verdade só existe no app Android instalado (fase 5).
 - Cota grátis do Apps Script: cerca de 20 mil chamadas externas por dia. Cada QAP usa ~5, e cada abertura da tela do QRA ~6. Para ~250 QAPs/dia sobra bastante.
 - Vídeo gravado em **WebM** (alguns Android) pode não tocar no **iPhone** da supervisão. MP4 é usado sempre que o celular do QRA permite.
 - Raio do posto (QAP feito longe do QTH) e QTI 1h antes ainda não geram alerta: o mapa aparece em cada envio para conferir.
