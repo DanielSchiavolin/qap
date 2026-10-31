@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.3';
+const APP_VERSION = '2026-10-31.4';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 
@@ -346,7 +346,7 @@ class PainelApp {
   async novoLink() {
     const id = this.postoAberto;
     const tinha = !!(this.cfgs[id] || {}).chave;
-    if (tinha && !confirm('O link antigo para de funcionar na hora. Todos os QRAs do posto vão precisar do link novo. Continuar?')) return;
+    if (tinha && !await this.confirmar('O link antigo para de funcionar na hora. Todos os QRAs do posto vão precisar do link novo.', 'Gerar link novo')) return;
     const bytes = crypto.getRandomValues(new Uint8Array(12));
     const chave = Array.from(bytes, b => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 56]).join('');
     const cfg = qapConfig(this.cfgs[id]);
@@ -450,7 +450,7 @@ class PainelApp {
   async gerarPin(qraId) {
     const q = this.sched.qras[qraId];
     if (!q) return;
-    if (this.pins[qraId] && !confirm(`Gerar um PIN novo para ${q.name}? O antigo para de funcionar.`)) return;
+    if (this.pins[qraId] && !await this.confirmar(`Gerar um PIN novo para ${q.name}? O antigo para de funcionar.`, 'Gerar PIN novo')) return;
     const n = crypto.getRandomValues(new Uint32Array(1))[0] % 10000;
     const pin = String(n).padStart(4, '0');
     const ok = await this.gravar(this.banco.set(`procedimentos/pins/${qraId}`, await sha256Hex(`${qraId}:${pin}`)));
@@ -462,7 +462,7 @@ class PainelApp {
 
   async removerPin(qraId) {
     const q = this.sched.qras[qraId];
-    if (!q || !confirm(`Remover o PIN de ${q.name}? Ele não consegue mais mandar QAP até ganhar outro.`)) return;
+    if (!q || !await this.confirmar(`Remover o PIN de ${q.name}? Ele não consegue mais mandar QAP até ganhar outro.`, 'Remover PIN')) return;
     await this.gravar(this.banco.remove(`procedimentos/pins/${qraId}`), 'PIN removido.');
   }
 
@@ -487,9 +487,26 @@ class PainelApp {
 
   abrirModal(id) { document.getElementById(id).classList.add('active'); }
 
+  // Pergunta na própria tela (o confirm() do navegador é bloqueado em alguns navegadores e responde "não")
+  confirmar(texto, botao) {
+    if (this.respostaConfirma) this.respostaConfirma(false);
+    document.getElementById('confirma-texto').textContent = texto;
+    document.getElementById('confirma-sim').textContent = botao;
+    this.abrirModal('modal-confirma');
+    return new Promise(res => { this.respostaConfirma = res; });
+  }
+
+  responderConfirma(sim) {
+    const res = this.respostaConfirma;
+    this.respostaConfirma = null;
+    document.getElementById('modal-confirma').classList.remove('active');
+    if (res) res(sim);
+  }
+
   fecharModal(el) {
     const m = el.closest('.modal-overlay');
     if (!m) return;
+    if (m.id === 'modal-confirma') { this.responderConfirma(false); return; }
     m.classList.remove('active');
     if (m.id === 'modal-posto') { this.postoAberto = null; this.feedAssinatura = null; }
     if (m.id === 'modal-pin') document.getElementById('pin-numero').textContent = '';
@@ -567,6 +584,7 @@ class PainelApp {
       document.querySelectorAll('#modal-posto [data-dia]').forEach(x => x.classList.toggle('active', x === b));
       this.renderFeed();
     }));
+    document.getElementById('confirma-sim').addEventListener('click', () => this.responderConfirma(true));
     document.getElementById('lista-qras').addEventListener('click', e => {
       const g = e.target.closest('[data-pin]');
       const r = e.target.closest('[data-sem-pin]');
