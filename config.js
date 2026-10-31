@@ -45,8 +45,8 @@ const QAP_ERROS = {
 
 // Objetos de valor do QTH. Tipo do posto -> categorias (as chaves são iguais às do Code.gs).
 const INV_TIPOS = {
-  stand: { nome: 'Stand', icone: '🏠', categorias: { decorado: 'Decorado', salao: 'Salão', area_externa: 'Área externa' } },
-  terreno: { nome: 'Terreno', icone: '🚧', categorias: { terreno: 'Terreno', copa: 'Copa' } },
+  stand: { nome: 'Stand', icone: '🏠', categorias: { copa: 'Copa', decorado: 'Decorado', salao: 'Salão', area_externa: 'Área externa' } },
+  terreno: { nome: 'Terreno', icone: '🚧', categorias: { terreno: 'Terreno' } }, // terreno não tem subcategoria
 };
 // Lista pronta para escolher (o QRA também pode digitar outro)
 const INV_OBJETOS = [

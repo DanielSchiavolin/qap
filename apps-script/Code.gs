@@ -29,7 +29,7 @@ const PIN_TENTATIVAS = 5;
 const PIN_BLOQUEIO_S = 15 * 60;
 const ID_VALIDO = /^[A-Za-z0-9_\-]{1,80}$/;
 // Objetos de valor: tipo do posto -> categorias (iguais ao INV_TIPOS do config.js)
-const INV_CATEGORIAS = { stand: ['decorado', 'salao', 'area_externa'], terreno: ['terreno', 'copa'] };
+const INV_CATEGORIAS = { stand: ['copa', 'decorado', 'salao', 'area_externa'], terreno: ['terreno'] };
 const INV_CHAVE = /^[a-z0-9_]{1,40}$/;
 const INV_MAX_ITENS = 150;
 

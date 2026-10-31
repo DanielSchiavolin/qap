@@ -26,7 +26,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DADOS = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(RAIZ, 'teste', '_dados')
 PORTA = 8765
 TIPOS = {'qti', 'assumir', 'qap', 'ronda', 'pausa_ini', 'pausa_fim', 'passar', 'qru'}
-INV_CATEGORIAS = {'stand': ['decorado', 'salao', 'area_externa'], 'terreno': ['terreno', 'copa']}
+INV_CATEGORIAS = {'stand': ['copa', 'decorado', 'salao', 'area_externa'], 'terreno': ['terreno']}
 
 
 def sha(s):

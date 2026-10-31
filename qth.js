@@ -7,7 +7,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.6';
+const APP_VERSION = '2026-10-31.7';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
