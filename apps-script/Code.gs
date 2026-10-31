@@ -181,7 +181,7 @@ function salvarMidia_(m, pasta, nomeBase) {
   if (m.tipo !== 'foto' && seg > MAX_SEG) throw erro_('longo');
   const bytes = Utilities.base64Decode(String(m.b64 || ''));
   if (!bytes.length || bytes.length > MAX_MB * 1024 * 1024) throw erro_('grande');
-  const nome = `${nomeBase.replace(/[\\/:*?"<>|]/g, '')}.${EXT[mime]}`;
+  const nome = `${limparNome_(nomeBase)}.${EXT[mime]}`;
   const arq = pasta.createFile(Utilities.newBlob(bytes, mime, nome));
   arq.setDescription(MARCA_ARQUIVO);
   const out = { id: arq.getId(), tipo: m.tipo, mime, kb: Math.round(bytes.length / 1024) };
@@ -201,6 +201,11 @@ function pastaRaiz_() {
   return f;
 }
 
+// Tira do nome os caracteres que o Drive/Windows não aceitam em nome de arquivo (\x22 = aspas)
+function limparNome_(s) {
+  return String(s).replace(/[\\/:*?\x22<>|]/g, '');
+}
+
 function subpasta_(pai, nome) {
   const it = pai.getFoldersByName(nome);
   return it.hasNext() ? it.next() : pai.createFolder(nome);
@@ -211,7 +216,7 @@ function pastaDoDia_(nomePosto, postId, dia) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const posto = subpasta_(pastaRaiz_(), `${String(nomePosto || postId).replace(/[\\/:*?"<>|]/g, '')} (${postId})`);
+    const posto = subpasta_(pastaRaiz_(), `${limparNome_(nomePosto || postId)} (${postId})`);
     return subpasta_(posto, dia);
   } finally {
     lock.releaseLock();

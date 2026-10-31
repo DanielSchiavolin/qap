@@ -5,7 +5,7 @@
 const QAP_CONFIG = {
   // URL do backend: Apps Script > Implantar > App da Web > "URL do app da Web" (termina em /exec).
   // Ver LEIAME.md, seção "Backend no Google Apps Script". Vazio = o app avisa que falta configurar.
-  apiUrl: '',
+  apiUrl: 'https://script.google.com/macros/s/AKfycbzAN2u52ppNYBn8DjcCnDAkznmCqcvdprj-TuP1t9LV-3GiYxNs_t61wYX_KWmDMfQIVw/exec',
   // Mesmo banco do Coberturas e do Pagamentos (postos, QRAs e escala já estão lá)
   firebase: {
     apiKey: 'AIzaSyB2XpLy5atMeLtc-XuOaAtY9m72mK9dZSY',
