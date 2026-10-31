@@ -41,6 +41,7 @@ const QAP_ERROS = {
   inventario: 'Lista de objetos inválida. Confira as quantidades.',
   checkup: 'A lista de objetos mudou enquanto você conferia. Abra o check-up de novo.',
   acao: 'Função nova ainda não liberada no servidor. Avise a supervisão.',
+  resposta: 'Não deu para responder este informe.',
 };
 
 // Objetos de valor do QTH. Tipo do posto -> categorias (as chaves são iguais às do Code.gs).
@@ -123,4 +124,74 @@ function recarregarParaVersao(v, arquivos) {
   Promise.all(arquivos.map(f => fetch(f, { cache: 'reload' }).catch(() => null)))
     .then(() => setTimeout(() => location.reload(), 800));
   return true;
+}
+
+// ===== Microfone e gravação (tela do QRA e painel) =====
+
+const MAX_SEG_MIDIA = 15; // vídeo e áudio: no máximo 15 s
+
+function escolherMime(opcoes) {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  return opcoes.find(m => MediaRecorder.isTypeSupported(m)) || '';
+}
+
+async function abrirMicrofone() {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+  } catch (e) {
+    if (QAP_MOCK) return microfoneFalso();
+    throw e;
+  }
+}
+
+// Só no teste local (?mock=1) quando o aparelho não tem microfone
+function microfoneFalso() {
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ac.createOscillator();
+  const dest = ac.createMediaStreamDestination();
+  osc.frequency.value = 440;
+  osc.connect(dest);
+  osc.start();
+  return dest.stream;
+}
+
+function pararStream(s) {
+  if (s) s.getTracks().forEach(t => t.stop());
+}
+
+// Grava um stream até 15 s (ou até parar()). onTick(segundosRestantes)
+class Gravador {
+  constructor(stream, mime, opcoes, onTick) {
+    this.chunks = [];
+    this.rec = new MediaRecorder(stream, Object.assign(mime ? { mimeType: mime } : {}, opcoes));
+    this.rec.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.pronto = new Promise(res => {
+      this.rec.onstop = () => {
+        clearInterval(this.timer);
+        const seg = Math.min(MAX_SEG_MIDIA, (Date.now() - this.inicio) / 1000);
+        res({ blob: new Blob(this.chunks, { type: (this.rec.mimeType || mime || '').split(';')[0] }), seg });
+      };
+    });
+    this.inicio = Date.now();
+    this.rec.start(1000);
+    onTick(MAX_SEG_MIDIA);
+    this.timer = setInterval(() => {
+      const resta = MAX_SEG_MIDIA - Math.floor((Date.now() - this.inicio) / 1000);
+      onTick(Math.max(0, resta));
+      if (resta <= 0) this.parar();
+    }, 250);
+  }
+  parar() {
+    if (this.rec.state !== 'inactive') this.rec.stop();
+    return this.pronto;
+  }
+}
+
+function blobParaBase64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1] || '');
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(blob);
+  });
 }

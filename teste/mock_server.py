@@ -3,7 +3,7 @@
 Teste local do App QAP, sem Firebase e sem Google Drive de verdade.
 
 Serve a pasta do app e imita:
-  /mock/api  -> o Code.gs (acoes posto, entrar, evento, midia, inventario, inventario_salvar, checkup)
+  /mock/api  -> o Code.gs (todas as acoes: posto, entrar, evento, midia, inventario, checkup, responder, mensagens...)
   /mock/db   -> o Realtime Database (GET/PUT/PATCH/DELETE ?path=a/b)
 
 Uso:  python teste/mock_server.py [pasta_dos_dados]
@@ -138,6 +138,22 @@ def ultimo_qap(p):
     return melhor
 
 
+def salvar_midia(m):
+    dados = base64.b64decode(m.get('b64') or '')
+    if not dados:
+        raise Erro('midia')
+    fid = uuid.uuid4().hex
+    os.makedirs(DADOS, exist_ok=True)
+    with open(os.path.join(DADOS, fid), 'wb') as f:
+        f.write(dados)
+    with open(os.path.join(DADOS, fid + '.mime'), 'w') as f:
+        f.write(m['mime'].split(';')[0])
+    item = {'id': fid, 'tipo': m['tipo'], 'mime': m['mime'].split(';')[0], 'kb': round(len(dados) / 1024)}
+    if m['tipo'] != 'foto':
+        item['seg'] = round(float(m.get('seg') or 0), 1)
+    return item
+
+
 def api(req):
     acao = req.get('acao')
     if acao == 'posto':
@@ -163,22 +179,10 @@ def api(req):
             cap = agora
         dia = dia_operacional(cap)
         salvas = []
-        for i, m in enumerate(midias):
-            dados = base64.b64decode(m.get('b64') or '')
-            if not dados:
-                raise Erro('midia')
+        for m in midias:
             if m['tipo'] != 'foto' and float(m.get('seg') or 0) > 16:
                 raise Erro('longo')
-            fid = uuid.uuid4().hex
-            os.makedirs(DADOS, exist_ok=True)
-            with open(os.path.join(DADOS, fid), 'wb') as f:
-                f.write(dados)
-            with open(os.path.join(DADOS, fid + '.mime'), 'w') as f:
-                f.write(m['mime'].split(';')[0])
-            item = {'id': fid, 'tipo': m['tipo'], 'mime': m['mime'].split(';')[0], 'kb': round(len(dados) / 1024)}
-            if m['tipo'] != 'foto':
-                item['seg'] = round(float(m.get('seg') or 0), 1)
-            salvas.append(item)
+            salvas.append(salvar_midia(m))
         ev = {'tipo': req['tipo'], 'qraId': qra['id'], 'qraNome': qra['nome'], 'ts': cap, 'recebidoEm': agora,
               'texto': str(req.get('texto') or '')[:500], 'midia': salvas}
         for k in ('lat', 'lng', 'prec'):
@@ -199,6 +203,54 @@ def api(req):
         if not os.path.exists(caminho):
             raise Erro('midia')
         with open(caminho, 'rb') as f, open(caminho + '.mime') as fm:
+            return {'ok': True, 'mime': fm.read(), 'b64': base64.b64encode(f.read()).decode()}
+    if acao == 'responder':
+        if req.get('token') != 'mock':
+            raise Erro('equipe')
+        p, dia, ev = req.get('p') or '', req.get('dia') or '', req.get('ev') or ''
+        evento = pegar(f'procedimentos/eventos/{dia}/{p}/{ev}')
+        if not evento:
+            raise Erro('resposta')
+        base = f'procedimentos/respostas/{dia}/{p}/{ev}'
+        msg = None
+        if req.get('tipo') == 'texto':
+            texto = str(req.get('texto') or '').strip()[:500]
+            if not texto:
+                raise Erro('resposta')
+            msg = {'tipo': 'texto', 'texto': texto, 'ts': agora_ms()}
+        elif req.get('tipo') == 'audio':
+            m = req.get('midia') or {}
+            if float(m.get('seg') or 0) > 16:
+                raise Erro('longo')
+            msg = {'tipo': 'audio', 'midia': salvar_midia(dict(m, tipo='audio')), 'ts': agora_ms()}
+        elif req.get('tipo') != 'curtir':
+            raise Erro('resposta')
+        atual = pegar(base) or {}
+        atual.update({'qraId': evento['qraId'], 'qraNome': evento.get('qraNome', ''), 'evTipo': evento['tipo'], 'evTs': evento['ts']})
+        if msg:
+            atual.setdefault('msgs', {})['r' + uuid.uuid4().hex[:12]] = msg
+        elif req.get('valor'):
+            atual['curtida'] = {'ts': agora_ms()}
+        else:
+            atual.pop('curtida', None)
+        gravar(base, atual)
+        return {'ok': True}
+    if acao in ('mensagens', 'midia_resp'):
+        checar_posto(req.get('p'), req.get('k'))
+        checar_pin(req.get('qraId'), req.get('pin'))
+        itens = []
+        for dia, postos in (pegar('procedimentos/respostas') or {}).items():
+            for ev, r in (postos.get(req['p']) or {}).items():
+                msgs = sorted((r.get('msgs') or {}).values(), key=lambda m: m['ts'])
+                if r.get('qraId') == req['qraId'] and (msgs or r.get('curtida')):
+                    itens.append({'dia': dia, 'ev': ev, 'evTipo': r.get('evTipo'), 'evTs': r.get('evTs'), 'curtida': r.get('curtida'), 'msgs': msgs})
+        itens.sort(key=lambda i: -i['evTs'])
+        if acao == 'mensagens':
+            return {'ok': True, 'agora': agora_ms(), 'itens': itens}
+        fid = req.get('id') or ''
+        if not any((m.get('midia') or {}).get('id') == fid for i in itens for m in i['msgs']):
+            raise Erro('midia')
+        with open(os.path.join(DADOS, os.path.basename(fid)), 'rb') as f, open(os.path.join(DADOS, os.path.basename(fid)) + '.mime') as fm:
             return {'ok': True, 'mime': fm.read(), 'b64': base64.b64encode(f.read()).decode()}
     if acao == 'inventario':
         checar_posto(req.get('p'), req.get('k'))

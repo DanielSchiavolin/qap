@@ -49,6 +49,9 @@ function doPost(e) {
       case 'inventario': return json_(inventario_(req));
       case 'inventario_salvar': return json_(inventarioSalvar_(req));
       case 'checkup': return json_(checkup_(req));
+      case 'responder': return json_(responder_(req));
+      case 'mensagens': return json_(mensagens_(req));
+      case 'midia_resp': return json_(midiaResp_(req));
       default: return json_({ ok: false, erro: 'acao' });
     }
   } catch (err) {
@@ -132,6 +135,91 @@ function midia_(req) {
   if (arq.getDescription() !== MARCA_ARQUIVO || arq.isTrashed()) throw erro_('midia');
   const blob = arq.getBlob();
   return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
+}
+
+// ===== Respostas da supervisão a cada informe (procedimentos/respostas/<dia>/<posto>/<evento>) =====
+
+// Painel (conta da equipe): curtir, mensagem de texto ou áudio de até 15 s para o QRA que enviou
+function responder_(req) {
+  checarEquipe_(req.token);
+  const p = String(req.p || ''), dia = String(req.dia || ''), ev = String(req.ev || '');
+  if (!ID_VALIDO.test(p) || !/^\d{4}-\d{2}-\d{2}$/.test(dia) || !ID_VALIDO.test(ev)) throw erro_('resposta');
+  const evento = db_(`procedimentos/eventos/${dia}/${p}/${ev}`);
+  if (!evento) throw erro_('resposta');
+  const base = `procedimentos/respostas/${dia}/${p}/${ev}`;
+  const agora = Date.now();
+  let msg = null;
+  if (req.tipo === 'texto') {
+    const texto = String(req.texto || '').trim().slice(0, 500);
+    if (!texto) throw erro_('resposta');
+    msg = { tipo: 'texto', texto, ts: agora };
+  } else if (req.tipo === 'audio') {
+    const post = db_(`posts/${p}`) || {};
+    const hora = Utilities.formatDate(new Date(agora), TZ, 'HH-mm-ss');
+    const midia = salvarMidia_(Object.assign({}, req.midia, { tipo: 'audio' }), pastaDoDia_(post.name, p, dia), `${hora}_resposta_supervisao`);
+    msg = { tipo: 'audio', midia, ts: agora };
+  } else if (req.tipo !== 'curtir') {
+    throw erro_('resposta');
+  }
+  db_(base, 'patch', { qraId: evento.qraId, qraNome: evento.qraNome || '', evTipo: evento.tipo, evTs: evento.ts });
+  if (msg) db_(`${base}/msgs`, 'post', msg);
+  else if (req.valor) db_(`${base}/curtida`, 'put', { ts: agora });
+  else db_(`${base}/curtida`, 'delete');
+  CacheService.getScriptCache().remove(`resp_${dia}_${p}`);
+  return { ok: true };
+}
+
+// Tela do QRA: respostas aos informes dele de hoje e de ontem. Chamada a cada minuto pelos
+// celulares abertos, por isso tudo vem do cache (o responder_ limpa o cache quando muda algo).
+function mensagens_(req) {
+  checarQraLeve_(req);
+  return { ok: true, agora: Date.now(), itens: respostasDoQra_(req.p, req.qraId) };
+}
+
+// Áudio de resposta: só se a resposta for para este QRA
+function midiaResp_(req) {
+  checarQraLeve_(req);
+  const id = String(req.id || '');
+  const dele = respostasDoQra_(req.p, req.qraId).some(i => i.msgs.some(m => m.midia && m.midia.id === id));
+  if (!dele) throw erro_('midia');
+  const blob = DriveApp.getFileById(id).getBlob();
+  return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
+}
+
+// Link + PIN com cache de 5 min. PIN que não bate passa pelo checarPin_ (conta erro e bloqueia).
+function checarQraLeve_(req) {
+  if (!ID_VALIDO.test(String(req.p || '')) || !req.k) throw erro_('link');
+  const cfg = doCache_(`cfg_${req.p}`, 300, () => db_(`procedimentos/config/${req.p}`));
+  if (!cfg || !cfg.chave || cfg.chave !== String(req.k)) throw erro_('link');
+  if (!ID_VALIDO.test(String(req.qraId || ''))) throw erro_('pin');
+  const pin = doCache_(`pinh_${req.qraId}`, 300, () => db_(`procedimentos/pins/${req.qraId}`));
+  if (!pin || !/^\d{4}$/.test(String(req.pin || '')) || sha256_(`${req.qraId}:${req.pin}`) !== pin) checarPin_(req.qraId, req.pin);
+}
+
+function respostasDoQra_(p, qraId) {
+  const hoje = diaOperacional_(new Date());
+  const itens = [];
+  [ontem_(hoje), hoje].forEach(dia => {
+    const tudo = doCache_(`resp_${dia}_${p}`, 600, () => db_(`procedimentos/respostas/${dia}/${p}`)) || {};
+    Object.keys(tudo).forEach(ev => {
+      const r = tudo[ev];
+      if (!r || r.qraId !== qraId) return;
+      const msgs = Object.keys(r.msgs || {}).map(k => r.msgs[k]).sort((a, b) => a.ts - b.ts);
+      if (!msgs.length && !r.curtida) return;
+      itens.push({ dia, ev, evTipo: r.evTipo, evTs: r.evTs, curtida: r.curtida || null, msgs });
+    });
+  });
+  return itens.sort((a, b) => b.evTs - a.evTs);
+}
+
+function doCache_(chave, segundos, ler) {
+  const cache = CacheService.getScriptCache();
+  const guardado = cache.get(chave);
+  if (guardado !== null) return JSON.parse(guardado);
+  const v = ler();
+  const s = JSON.stringify(v === undefined ? null : v);
+  if (s.length < 90000) cache.put(chave, s, segundos);
+  return v;
 }
 
 // ===== Objetos de valor do QTH (procedimentos/inventario/<posto> e inventario_hist/<posto>) =====

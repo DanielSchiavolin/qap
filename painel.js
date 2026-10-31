@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.7';
+const APP_VERSION = '2026-10-31.8';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 
@@ -119,6 +119,8 @@ class PainelApp {
     this.invHist = {};         // histórico do posto aberto
     this.pararInvHist = null;
     this.eventosPorDia = {};
+    this.respostasPorDia = {};  // like / mensagem / áudio da supervisão em cada informe
+    this.respondendo = null;    // { ev, modo: 'texto' | 'audio', gravador }
     this.escutasDia = {};
     this.carregado = { posts: false, qras: false, folgas: false, coberturas: false, config: false };
     this.sound = new SoundManager();
@@ -159,20 +161,30 @@ class PainelApp {
     this.atualizarBotoes();
   }
 
-  // Eventos de hoje e de ontem (dia operacional); troca as escutas quando vira o dia
+  // Eventos (e respostas da supervisão) de hoje e de ontem (dia operacional); troca as escutas quando vira o dia
   escutarDias() {
     const hoje = diaOperacional(this.agora());
     const dias = [hoje, addDays(hoje, -1)];
     Object.keys(this.escutasDia).forEach(d => {
-      if (!dias.includes(d)) { this.escutasDia[d](); delete this.escutasDia[d]; delete this.eventosPorDia[d]; }
+      if (!dias.includes(d)) {
+        this.escutasDia[d]();
+        delete this.escutasDia[d];
+        delete this.eventosPorDia[d];
+        delete this.respostasPorDia[d];
+      }
     });
     dias.forEach(d => {
       if (this.escutasDia[d]) return;
-      this.escutasDia[d] = this.banco.listen(`procedimentos/eventos/${d}`, data => {
+      const pararEventos = this.banco.listen(`procedimentos/eventos/${d}`, data => {
         this.eventosPorDia[d] = data;
         this.agendarRender();
         if (this.postoAberto) this.renderFeed();
       });
+      const pararRespostas = this.banco.listen(`procedimentos/respostas/${d}`, data => {
+        this.respostasPorDia[d] = data;
+        if (this.postoAberto) this.renderRespostas();
+      });
+      this.escutasDia[d] = () => { pararEventos(); pararRespostas(); };
     });
   }
 
@@ -446,16 +458,120 @@ class PainelApp {
         <div class="evento-info">${local}${atraso}</div>
         ${ev.texto ? `<div class="evento-texto">${escHtml(ev.texto)}</div>` : ''}
         ${midias ? `<div class="midias">${midias}</div>` : ''}
+        <div class="respostas" data-resp="${escHtml(ev.id)}"></div>
       </div>`;
     }).join('');
+    this.feedDia = dia;
+    this.renderRespostas();
+  }
+
+  // Embaixo de cada informe: o que a supervisão já respondeu + 👍 / 💬 / 🎙️.
+  // Cada caixa só é redesenhada quando muda (não apaga o que está sendo digitado).
+  renderRespostas() {
+    const id = this.postoAberto;
+    if (!id || !this.feedDia) return;
+    const dados = (this.respostasPorDia[this.feedDia] || {})[id] || {};
+    document.querySelectorAll('#mp-feed [data-resp]').forEach(box => {
+      const ev = box.dataset.resp;
+      const r = dados[ev] || {};
+      const resp = this.respondendo && this.respondendo.ev === ev ? this.respondendo : null;
+      const assinatura = `${JSON.stringify(r)}|${resp ? resp.modo : ''}`;
+      if (box.dataset.assinatura === assinatura) return;
+      box.dataset.assinatura = assinatura;
+      const curtido = !!r.curtida;
+      let h = Object.values(r.msgs || {}).sort((a, b) => a.ts - b.ts).map(m => `<div class="resp-msg">🗣️ <b>Supervisão</b> ${horaCurta(m.ts)} · ${m.tipo === 'texto'
+        ? escHtml(m.texto)
+        : `<span class="midia midia-audio" data-midia="${escHtml((m.midia || {}).id)}" data-tipo="audio">🎙️ carregando…</span>`}</div>`).join('');
+      if (resp && resp.modo === 'texto') {
+        h += `<div class="resp-form"><input class="form-input" id="resp-texto" maxlength="500" placeholder="Mensagem para o QRA">
+          <button class="btn btn-small btn-primary" data-resp-acao="enviar-texto">Enviar</button><button class="btn btn-small" data-resp-acao="cancelar">Cancelar</button></div>`;
+      } else if (resp && resp.modo === 'audio') {
+        h += `<div class="resp-form"><button class="btn btn-small btn-danger" id="resp-gravando" data-resp-acao="parar-audio">⏹️ Parar e enviar (${MAX_SEG_MIDIA})</button>
+          <button class="btn btn-small" data-resp-acao="cancelar">Cancelar</button></div>`;
+      } else {
+        h += `<div class="resp-botoes">
+          <button class="btn btn-small${curtido ? ' btn-primary' : ''}" data-resp-acao="curtir">👍 ${curtido ? 'Curtido' : 'Curtir'}</button>
+          <button class="btn btn-small" data-resp-acao="texto">💬 Mensagem</button>
+          <button class="btn btn-small" data-resp-acao="audio">🎙️ Áudio</button></div>`;
+      }
+      box.innerHTML = h;
+    });
     this.carregarMidias();
+  }
+
+  acaoResposta(acao, ev) {
+    const p = this.postoAberto, dia = this.feedDia;
+    const resp = this.respondendo;
+    switch (acao) {
+      case 'curtir': {
+        const r = ((this.respostasPorDia[dia] || {})[p] || {})[ev] || {};
+        this.responder(p, dia, ev, { tipo: 'curtir', valor: !r.curtida });
+        return;
+      }
+      case 'texto':
+        if (resp && resp.gravador) return;
+        this.respondendo = { ev, modo: 'texto' };
+        this.renderRespostas();
+        document.getElementById('resp-texto').focus();
+        return;
+      case 'enviar-texto': {
+        const texto = document.getElementById('resp-texto').value.trim();
+        if (!texto) return this.toast('Escreva a mensagem.', 'error');
+        this.respondendo = null;
+        this.renderRespostas();
+        this.responder(p, dia, ev, { tipo: 'texto', texto }, '💬 Mensagem enviada ao QRA.');
+        return;
+      }
+      case 'audio': return this.gravarResposta(p, dia, ev);
+      case 'parar-audio': if (resp && resp.gravador) resp.gravador.parar(); return;
+      case 'cancelar': return this.cancelarResposta();
+      default:
+    }
+  }
+
+  cancelarResposta() {
+    const resp = this.respondendo;
+    if (!resp) return;
+    this.respondendo = null;
+    if (resp.gravador) { resp.cancelado = true; resp.gravador.parar(); }
+    this.renderRespostas();
+  }
+
+  async gravarResposta(p, dia, ev) {
+    if (this.respondendo && this.respondendo.gravador) return;
+    if (!window.MediaRecorder) return this.toast('Este navegador não grava áudio.', 'error');
+    let mic;
+    try { mic = await abrirMicrofone(); } catch (e) { return this.toast('Microfone bloqueado. Libere o microfone para este site.', 'error'); }
+    const mime = escolherMime(['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']);
+    const resp = this.respondendo = { ev, modo: 'audio' };
+    this.renderRespostas();
+    resp.gravador = new Gravador(mic, mime, { audioBitsPerSecond: 32000 }, s => {
+      const b = document.getElementById('resp-gravando');
+      if (b) b.textContent = `⏹️ Parar e enviar (${s})`;
+    });
+    const r = await resp.gravador.pronto;
+    pararStream(mic);
+    if (this.respondendo === resp) { this.respondendo = null; this.renderRespostas(); }
+    if (resp.cancelado || !r.blob.size) return;
+    const midia = { mime: r.blob.type || mime.split(';')[0], seg: r.seg, b64: await blobParaBase64(r.blob) };
+    this.responder(p, dia, ev, { tipo: 'audio', midia }, '🎙️ Áudio enviado ao QRA.');
+  }
+
+  async responder(p, dia, ev, extra, msgOk) {
+    try {
+      await qapApi(Object.assign({ acao: 'responder', token: await this.banco.token(), p, dia, ev }, extra));
+      if (msgOk) this.toast(msgOk, 'success');
+    } catch (err) {
+      this.toast(`❌ ${qapErroTexto(err)}`, 'error');
+    }
   }
 
   // Mídia só pelo backend, com o login da equipe
   async carregarMidias() {
-    const caixas = Array.from(document.querySelectorAll('#mp-feed [data-midia]'));
+    const caixas = Array.from(document.querySelectorAll('#mp-feed [data-midia]:not([data-carregada])'));
     for (const caixa of caixas) {
       if (!caixa.isConnected) return;
+      caixa.dataset.carregada = '1'; // não recarrega (nem reinicia) o que já está na tela
       const id = caixa.dataset.midia;
       try {
         let url = this.midiaCache.get(id);
@@ -562,6 +678,7 @@ class PainelApp {
     if (m.id === 'modal-confirma') { this.responderConfirma(false); return; }
     m.classList.remove('active');
     if (m.id === 'modal-posto') {
+      this.cancelarResposta();
       this.postoAberto = null;
       this.feedAssinatura = null;
       if (this.pararInvHist) { this.pararInvHist(); this.pararInvHist = null; }
@@ -643,6 +760,14 @@ class PainelApp {
       this.renderFeed();
     }));
     document.getElementById('confirma-sim').addEventListener('click', () => this.responderConfirma(true));
+    const feed = document.getElementById('mp-feed');
+    feed.addEventListener('click', e => {
+      const b = e.target.closest('[data-resp-acao]');
+      if (b) this.acaoResposta(b.dataset.respAcao, b.closest('[data-resp]').dataset.resp);
+    });
+    feed.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.id === 'resp-texto') this.acaoResposta('enviar-texto', e.target.closest('[data-resp]').dataset.resp);
+    });
     document.getElementById('lista-qras').addEventListener('click', e => {
       const g = e.target.closest('[data-pin]');
       const r = e.target.closest('[data-sem-pin]');

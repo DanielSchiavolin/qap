@@ -3,11 +3,12 @@
 // Abre pela URL do QTH (qth.html?p=<posto>&k=<chave>). O QRA entra com nome + PIN e envia QAP
 // com foto ou vídeo tirados na hora (sem galeria), áudio de até 15 s e localização.
 // Aba "Objetos de valor": lista do QTH por categoria, adicionar/remover e check-up geral.
+// Aba "Mensagens": like, texto e áudio da supervisão em cada informe (busca a cada minuto).
 // Não mostra mídia de ninguém: o QRA só envia. Não usa a senha da equipe.
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.7';
+const APP_VERSION = '2026-10-31.8';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -29,7 +30,8 @@ const ACOES = [
   { tipo: 'qti', imagem: 'nenhuma', nome: 'QTI (a caminho)' },
 ];
 const ICONES = { qap: '📸', assumir: '✅', ronda: '🔦', pausa_ini: '🍽️', pausa_fim: '↩️', passar: '🔄', qru: '🚨', qti: '📻' };
-const QUE_CONTA = ev => ev && (ev.temImagem || ev.tipo === 'pausa_fim');
+const NOME_INFORME = { qap: 'QAP', assumir: 'Assumir posto', ronda: 'Ronda', pausa_ini: 'Saída 3/6', pausa_fim: 'Volta do 3/6', passar: 'Passar posto', qru: 'Ocorrência', qti: 'QTI' };
+const QUE_CONTA =ev => ev && (ev.temImagem || ev.tipo === 'pausa_fim');
 
 // ===== Fila de envios (IndexedDB): sem internet, o envio fica guardado e sai sozinho depois =====
 
@@ -70,11 +72,6 @@ const Fila = {
 
 // ===== Câmera e microfone =====
 
-function escolherMime(opcoes) {
-  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
-  return opcoes.find(m => MediaRecorder.isTypeSupported(m)) || '';
-}
-
 async function abrirCamera() {
   try {
     return await navigator.mediaDevices.getUserMedia({
@@ -86,16 +83,7 @@ async function abrirCamera() {
   }
 }
 
-async function abrirMicrofone() {
-  try {
-    return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-  } catch (e) {
-    if (QAP_MOCK) return microfoneFalso();
-    throw e;
-  }
-}
-
-// Só no teste local (?mock=1) quando o aparelho não tem câmera/microfone
+// Só no teste local (?mock=1) quando o aparelho não tem câmera
 function cameraFalsa() {
   const c = document.createElement('canvas');
   c.width = 640; c.height = 480;
@@ -111,57 +99,6 @@ function cameraFalsa() {
     ctx.fillText(new Date().toLocaleTimeString('pt-BR'), 220, 280);
   }, 66);
   return c.captureStream(15);
-}
-
-function microfoneFalso() {
-  const ac = new (window.AudioContext || window.webkitAudioContext)();
-  const osc = ac.createOscillator();
-  const dest = ac.createMediaStreamDestination();
-  osc.frequency.value = 440;
-  osc.connect(dest);
-  osc.start();
-  return dest.stream;
-}
-
-function pararStream(s) {
-  if (s) s.getTracks().forEach(t => t.stop());
-}
-
-// Grava um stream até 15 s (ou até parar()). onTick(segundosRestantes)
-class Gravador {
-  constructor(stream, mime, opcoes, onTick) {
-    this.chunks = [];
-    this.rec = new MediaRecorder(stream, Object.assign(mime ? { mimeType: mime } : {}, opcoes));
-    this.rec.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
-    this.pronto = new Promise(res => {
-      this.rec.onstop = () => {
-        clearInterval(this.timer);
-        const seg = Math.min(MAX_SEG, (Date.now() - this.inicio) / 1000);
-        res({ blob: new Blob(this.chunks, { type: (this.rec.mimeType || mime || '').split(';')[0] }), seg });
-      };
-    });
-    this.inicio = Date.now();
-    this.rec.start(1000);
-    onTick(MAX_SEG);
-    this.timer = setInterval(() => {
-      const resta = MAX_SEG - Math.floor((Date.now() - this.inicio) / 1000);
-      onTick(Math.max(0, resta));
-      if (resta <= 0) this.parar();
-    }, 250);
-  }
-  parar() {
-    if (this.rec.state !== 'inactive') this.rec.stop();
-    return this.pronto;
-  }
-}
-
-function blobParaBase64(blob) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(',')[1] || '');
-    r.onerror = () => rej(r.error);
-    r.readAsDataURL(blob);
-  });
 }
 
 // Só a data/hora do servidor, no canto de baixo, gravada dentro da foto/vídeo
@@ -205,6 +142,8 @@ class QthApp {
     this.invAddQtd = 1;
     this.invAchados = {};     // check-up: "<categoria>/<objeto>" -> quantidade encontrada
     this.invObs = '';
+    this.aba = 'qap';
+    this.msgs = null;         // respostas da supervisão (null = ainda não buscou)
   }
 
   agora() { return Date.now() + this.offset; }
@@ -220,9 +159,11 @@ class QthApp {
     await this.carregarPosto();
     window.addEventListener('online', () => this.enviarFila());
     setInterval(() => this.enviarFila(), 30000);
+    setInterval(() => { if (!document.hidden) this.buscarMensagens(); }, 60000);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return;
       this.enviarFila();
+      this.buscarMensagens();
       if (Date.now() - (this.carregadoEm || 0) > 5 * 60000) this.carregarPosto(true);
       this.checarVersao();
     });
@@ -321,6 +262,7 @@ class QthApp {
     this.sessao = null;
     this.inv = null;
     this.invRascunho = null;
+    this.msgs = null;
     this.mostrarAba('qap');
     this.abrirEntrar();
   }
@@ -333,6 +275,7 @@ class QthApp {
     this.mostrarTela('tela-principal');
     this.tique();
     this.atualizarFila();
+    this.buscarMensagens();
   }
 
   montarAcoes() {
@@ -602,10 +545,103 @@ class QthApp {
   // ----- Objetos de valor do QTH -----
 
   mostrarAba(aba) {
+    this.aba = aba;
     document.querySelectorAll('#abas-qra [data-aba]').forEach(b => b.classList.toggle('active', b.dataset.aba === aba));
-    document.getElementById('aba-qap').classList.toggle('hidden', aba !== 'qap');
-    document.getElementById('aba-inv').classList.toggle('hidden', aba !== 'inv');
+    ['qap', 'inv', 'msg'].forEach(a => document.getElementById(`aba-${a}`).classList.toggle('hidden', aba !== a));
     if (aba === 'inv' && !this.invRascunho) this.carregarInv();
+    if (aba === 'msg') { this.renderMensagens(); this.marcarVistas(); }
+  }
+
+  // ----- Mensagens da supervisão (like, texto, áudio) -----
+
+  chaveVisto() { return `qapVisto_${POSTO}_${this.sessao ? this.sessao.qraId : ''}`; }
+
+  // Cada like/mensagem tem um horário; "visto" guarda o mais novo que o QRA já viu
+  momentos(itens) {
+    const ts = [];
+    (itens || []).forEach(i => {
+      if (i.curtida) ts.push(i.curtida.ts);
+      i.msgs.forEach(m => ts.push(m.ts));
+    });
+    return ts;
+  }
+
+  async buscarMensagens() {
+    if (!this.sessao || !this.posto || this.buscandoMsgs) return;
+    this.buscandoMsgs = true;
+    try {
+      const r = await qapApi({ acao: 'mensagens', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin });
+      const antes = Math.max(0, ...this.momentos(this.msgs));
+      const primeira = this.msgs === null;
+      this.msgs = r.itens || [];
+      const novas = this.momentos(this.msgs).filter(t => t > antes).length;
+      if (!primeira && novas && this.aba !== 'msg') this.avisarMensagem();
+      if (this.aba === 'msg') { this.renderMensagens(); this.marcarVistas(); }
+      this.atualizarBadge();
+    } catch (err) {
+      if (err.codigo === 'pin' || err.codigo === 'sem_pin' || err.codigo === 'link') this.erroSessao(err);
+    } finally {
+      this.buscandoMsgs = false;
+    }
+  }
+
+  avisarMensagem() {
+    this.toast('💬 A supervisão respondeu seu informe. Veja em Mensagens.', 'success');
+    try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.connect(g); g.connect(ac.destination);
+      o.frequency.value = 880; g.gain.value = 0.15;
+      o.start(); o.stop(ac.currentTime + 0.25);
+    } catch (e) { /* sem som antes do primeiro toque */ }
+  }
+
+  marcarVistas() {
+    const max = Math.max(0, ...this.momentos(this.msgs));
+    try { localStorage.setItem(this.chaveVisto(), String(max)); } catch (e) {}
+    this.atualizarBadge();
+  }
+
+  atualizarBadge() {
+    let visto = 0;
+    try { visto = Number(localStorage.getItem(this.chaveVisto()) || 0); } catch (e) {}
+    const n = this.momentos(this.msgs).filter(t => t > visto).length;
+    const b = document.getElementById('msg-badge');
+    b.textContent = n;
+    b.classList.toggle('hidden', !n);
+  }
+
+  renderMensagens() {
+    const el = document.getElementById('msgs');
+    if (this.msgs === null) { el.innerHTML = '<div class="inv-vazio">Carregando…</div>'; return; }
+    if (!this.msgs.length) {
+      el.innerHTML = '<div class="inv-vazio">Nenhuma resposta da supervisão hoje.<br>Quando ela curtir ou responder um informe seu, aparece aqui.</div>';
+      return;
+    }
+    el.innerHTML = this.msgs.map(i => {
+      return `<div class="msg-item">
+        <div class="msg-topo">${ICONES[i.evTipo] || '•'} ${escHtml(NOME_INFORME[i.evTipo] || i.evTipo)} das ${horaCurta(i.evTs)}</div>
+        ${i.curtida ? `<div class="msg-linha">👍 A supervisão curtiu <span>${horaCurta(i.curtida.ts)}</span></div>` : ''}
+        ${i.msgs.map(m => `<div class="msg-linha">🗣️ ${m.tipo === 'texto'
+          ? escHtml(m.texto)
+          : `<span data-audio-resp="${escHtml((m.midia || {}).id)}"><button class="btn btn-small" data-ouvir="${escHtml((m.midia || {}).id)}">▶️ Ouvir áudio (${Math.round((m.midia || {}).seg || 0)} s)</button></span>`} <span>${horaCurta(m.ts)}</span></div>`).join('')}
+      </div>`;
+    }).join('');
+  }
+
+  async ouvirAudio(id) {
+    const caixa = document.querySelector(`[data-audio-resp="${CSS.escape(id)}"]`);
+    if (!caixa) return;
+    caixa.textContent = 'Carregando o áudio…';
+    try {
+      const r = await qapApi({ acao: 'midia_resp', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin, id });
+      const bin = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bin], { type: r.mime }));
+      caixa.innerHTML = `<audio src="${url}" controls autoplay controlslist="nodownload"></audio>`;
+    } catch (err) {
+      caixa.textContent = `⚠️ ${qapErroTexto(err)}`;
+    }
   }
 
   async carregarInv() {
@@ -864,6 +900,10 @@ class QthApp {
     document.getElementById('abas-qra').addEventListener('click', e => {
       const b = e.target.closest('[data-aba]');
       if (b) this.mostrarAba(b.dataset.aba);
+    });
+    document.getElementById('msgs').addEventListener('click', e => {
+      const b = e.target.closest('[data-ouvir]');
+      if (b) this.ouvirAudio(b.dataset.ouvir);
     });
     const inv = document.getElementById('inv');
     inv.addEventListener('click', e => {
