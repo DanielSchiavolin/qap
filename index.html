@@ -44,6 +44,7 @@
         <nav class="view-tabs" role="tablist">
             <button class="view-tab active" data-view="agora" role="tab">🚨 Postos agora</button>
             <button class="view-tab" data-view="pins" role="tab">🔑 PINs dos QRAs</button>
+            <button class="view-tab" data-view="seg" role="tab">🛡️ Segurança <span id="seg-badge" class="msg-badge hidden"></span></button>
         </nav>
 
         <section id="view-agora" class="view">
@@ -62,6 +63,27 @@
             </div>
             <p class="card-linha fraca" style="margin-bottom:10px">O QRA entra na tela do posto com o nome e este PIN de 4 números. O PIN fica guardado só como código (hash): depois de fechar a janela, ninguém consegue ver o número. Se o QRA esquecer, gere outro.</p>
             <div id="lista-qras" class="lista-qras"></div>
+        </section>
+
+        <!-- segurança: app obrigatório, pausa de emergência, instalação e registro de tentativas -->
+        <section id="view-seg" class="view hidden">
+            <div class="config-box">
+                <label class="linha"><input type="checkbox" id="seg-exigir"> <strong>📲 Exigir o app</strong></label>
+                <p class="card-linha fraca">Ligado: o link do posto no navegador para de funcionar para todos os QRAs; só o app (sem print) envia. Ligue depois que todos instalarem.</p>
+                <label class="linha" style="margin-top:10px"><input type="checkbox" id="seg-pausar"> <strong>⛔ Pausar tudo (emergência)</strong></label>
+                <p class="card-linha fraca">Ligado: nenhum QRA consegue entrar nem enviar nada até desligar.</p>
+            </div>
+            <div class="config-box">
+                <strong>📥 Instalar o app nos celulares (Android)</strong>
+                <div id="seg-link-apk" class="link-qth"></div>
+                <div class="linha">
+                    <button id="seg-copiar-apk" class="btn btn-small">📋 Copiar link</button>
+                    <button id="seg-whats-apk" class="btn btn-small">📱 Mandar no WhatsApp</button>
+                    <button id="seg-segredo" class="btn btn-small">🔑 Código do app (para o GitHub)</button>
+                </div>
+            </div>
+            <div class="cat-titulo">Registro de segurança · hoje e ontem</div>
+            <div id="seg-lista" class="feed"></div>
         </section>
     </main>
 
@@ -110,6 +132,22 @@
             <p class="card-linha">Passe este PIN para o QRA (pessoalmente ou por mensagem só para ele). Depois de fechar, ele não aparece mais.</p>
             <div id="pin-numero" class="pin-grande"></div>
             <button class="btn btn-primary" style="width:100%" data-fechar>Já anotei</button>
+        </div>
+    </div>
+
+    <!-- código do app: vai no GitHub (Settings > Secrets > APP_SEGREDO) para o app assinar os pedidos -->
+    <div id="modal-segredo" class="modal-overlay">
+        <div class="modal-content" style="max-width:460px">
+            <div class="modal-header">
+                <h2>🔑 Código do app</h2>
+                <button class="modal-close" data-fechar>✕</button>
+            </div>
+            <p class="card-linha">Cole este código no GitHub, no segredo <b>APP_SEGREDO</b> do repositório <b>qap-app</b>. Não mande para ninguém: quem tiver este código consegue fingir ser o app.</p>
+            <div id="segredo-valor" class="link-qth" style="font-size:.95rem;user-select:all"></div>
+            <div class="linha" style="justify-content:flex-end">
+                <button id="segredo-copiar" class="btn btn-small btn-primary">📋 Copiar</button>
+                <button class="btn btn-small" data-fechar>Fechar</button>
+            </div>
         </div>
     </div>
 

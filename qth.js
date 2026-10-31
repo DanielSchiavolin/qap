@@ -8,7 +8,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.9';
+const APP_VERSION = '2026-10-31.10';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -155,7 +155,9 @@ class QthApp {
     this.ligarEventos();
     setInterval(() => this.tique(), 1000);
     await Fila.abrir();
+    this.ligarSeguranca();
     try { this.sessao = JSON.parse(localStorage.getItem(this.chaveSessao()) || 'null'); } catch (e) { this.sessao = null; }
+    if (this.sessao && !this.sessao.sessao) this.sessao = null; // sessão antiga (com PIN): entra de novo
     await this.carregarPosto();
     window.addEventListener('online', () => this.enviarFila());
     setInterval(() => this.enviarFila(), 30000);
@@ -175,8 +177,12 @@ class QthApp {
     ['tela-carregando', 'tela-erro', 'tela-entrar', 'tela-principal'].forEach(t => document.getElementById(t).classList.toggle('hidden', t !== id));
   }
 
-  erroTela(texto) {
+  // codigo 'sem_app' / 'app_invalido' (fora do app): mostra o botão e o passo a passo para baixar o app
+  erroTela(texto, codigo) {
     document.getElementById('erro-texto').textContent = texto;
+    const baixar = !QAP_NATIVO && (codigo === 'sem_app' || codigo === 'app_invalido');
+    document.getElementById('baixar-app').classList.toggle('hidden', !baixar);
+    document.getElementById('btn-tentar').classList.toggle('hidden', baixar);
     this.mostrarTela('tela-erro');
   }
 
@@ -188,6 +194,7 @@ class QthApp {
       const t0 = Date.now();
       const r = await qapApi({ acao: 'posto', p: POSTO, k: CHAVE });
       this.offset = r.agora - Math.round((t0 + Date.now()) / 2);
+      qapOffsetRelogio = this.offset;
       this.posto = r.posto;
       this.qras = r.qras || [];
       this.ultimo = r.ultimo ? { ts: r.ultimo.ts, qraNome: r.ultimo.qraNome, temImagem: true } : null;
@@ -197,8 +204,8 @@ class QthApp {
       else if (!silencioso || !this.sessao) this.abrirEntrar();
       this.enviarFila();
     } catch (err) {
-      if (silencioso) return;
-      this.erroTela(qapErroTexto(err));
+      if (silencioso && !['sem_app', 'app_invalido', 'pausado'].includes(err.codigo)) return;
+      this.erroTela(qapErroTexto(err), err.codigo);
     }
   }
 
@@ -245,7 +252,7 @@ class QthApp {
     this.ocupado(true, 'Conferindo PIN…');
     try {
       const r = await qapApi({ acao: 'entrar', p: POSTO, k: CHAVE, qraId, pin });
-      this.sessao = { qraId: r.qra.id, qraNome: r.qra.nome, pin };
+      this.sessao = { qraId: r.qra.id, qraNome: r.qra.nome, sessao: r.sessao }; // o PIN não fica guardado
       try { localStorage.setItem(this.chaveSessao(), JSON.stringify(this.sessao)); } catch (e) { /* fica só nesta aba */ }
       this.abrirPrincipal();
     } catch (err) {
@@ -483,13 +490,13 @@ class QthApp {
       const midias = [];
       for (const a of cap.anexos) midias.push({ tipo: a.tipo, mime: a.mime, seg: a.seg || 0, b64: await blobParaBase64(a.blob) });
       const body = {
-        acao: 'evento', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin,
+        acao: 'evento', p: POSTO, k: CHAVE, sessao: this.sessao.sessao,
         tipo: cap.acao.tipo, texto: document.getElementById('cap-texto').value.trim(),
         capturadoEm: cap.capturadoEm || this.agora(), midias,
       };
       if (cap.local) Object.assign(body, cap.local);
       else body.semLocal = cap.semLocal || 'sem_resposta';
-      await Fila.add({ body, criadoEm: Date.now(), tipo: cap.acao.tipo, temImagem });
+      await Fila.add({ body, criadoEm: Date.now(), tipo: cap.acao.tipo, temImagem, qraId: this.sessao.qraId });
       this.fecharCaptura();
     } catch (e) {
       this.ocupado(false);
@@ -509,19 +516,28 @@ class QthApp {
     if (mostrar && itens.length) this.ocupado(true, 'Enviando…');
     try {
       for (const item of itens) {
+        if (!this.sessao) break;
+        if (item.qraId && item.qraId !== this.sessao.qraId) continue; // de outro QRA: sai quando ele entrar
         try {
-          const r = await qapApi(item.body);
+          const r = await qapApi(Object.assign({}, item.body, { sessao: this.sessao.sessao }));
           await Fila.remover(item.id);
           enviou = true;
           if (QUE_CONTA(item) && (!this.ultimo || r.ts > this.ultimo.ts)) this.ultimo = { ts: r.ts, qraNome: this.sessao ? this.sessao.qraNome : '', temImagem: true };
           const nome = (ACOES.find(a => a.tipo === item.tipo) || {}).nome || 'Envio';
           this.toast(`✅ ${nome} enviado às ${horaCurta(r.ts)}`, 'success');
+          // QTA: o turno deste QRA acabou, o próximo entra com o PIN dele
+          if (item.tipo === 'passar') { this.sair(); this.toast('🔄 QTA registrado. Bom descanso!', 'success'); break; }
         } catch (err) {
-          if (err.codigo === 'rede' || err.codigo === 'interno' || err.codigo === 'config') {
+          if (err.codigo === 'rede' || err.codigo === 'interno' || err.codigo === 'config' || err.codigo === 'limite') {
             if (mostrar) this.toast('📶 Sem conexão: o envio ficou guardado e sai sozinho quando a internet voltar. Não feche o app.', 'error');
             break;
           }
-          // recusado pelo servidor (PIN trocado, link trocado...): não adianta repetir
+          if (err.codigo === 'sessao' || err.codigo === 'pausado' || err.codigo === 'sem_app' || err.codigo === 'app_invalido') {
+            // o envio continua guardado: sai depois que o QRA entrar de novo / o app for liberado
+            if (!this.erroSessao(err)) this.toast(qapErroTexto(err), 'error');
+            break;
+          }
+          // recusado pelo servidor (link trocado, mídia inválida...): não adianta repetir
           await Fila.remover(item.id);
           this.toast(`❌ NÃO enviado: ${qapErroTexto(err)}`, 'error');
           if (err.codigo === 'pin' || err.codigo === 'sem_pin') { this.sair(); break; }
@@ -574,7 +590,7 @@ class QthApp {
     if (!this.sessao || !this.posto || this.buscandoMsgs) return;
     this.buscandoMsgs = true;
     try {
-      const r = await qapApi({ acao: 'mensagens', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin });
+      const r = await qapApi({ acao: 'mensagens', p: POSTO, k: CHAVE, sessao: this.sessao.sessao });
       const antes = Math.max(0, ...this.momentos(this.msgs));
       const primeira = this.msgs === null;
       this.msgs = r.informes || [];
@@ -583,7 +599,7 @@ class QthApp {
       if (this.aba === 'msg') { this.renderMensagens(); this.marcarVistas(); }
       this.atualizarBadge();
     } catch (err) {
-      if (err.codigo === 'pin' || err.codigo === 'sem_pin' || err.codigo === 'link') this.erroSessao(err);
+      this.erroSessao(err);
     } finally {
       this.buscandoMsgs = false;
     }
@@ -653,7 +669,7 @@ class QthApp {
     if (!caixa) return;
     caixa.textContent = 'Carregando o áudio…';
     try {
-      const r = await qapApi({ acao: 'midia_resp', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin, id });
+      const r = await qapApi({ acao: 'midia_resp', p: POSTO, k: CHAVE, sessao: this.sessao.sessao, id });
       const bin = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bin], { type: r.mime }));
       caixa.innerHTML = `<audio src="${url}" controls autoplay controlslist="nodownload"></audio>`;
@@ -666,7 +682,7 @@ class QthApp {
     const el = document.getElementById('inv');
     el.innerHTML = '<div class="inv-vazio">Carregando os objetos…</div>';
     try {
-      const r = await qapApi({ acao: 'inventario', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin });
+      const r = await qapApi({ acao: 'inventario', p: POSTO, k: CHAVE, sessao: this.sessao.sessao });
       this.usarInv(r.inv || {});
     } catch (err) {
       if (this.erroSessao(err)) return;
@@ -684,8 +700,8 @@ class QthApp {
 
   // PIN ou link trocados no meio do caminho: volta para a tela certa. Devolve true se tratou.
   erroSessao(err) {
-    if (err.codigo === 'pin' || err.codigo === 'sem_pin') { this.toast(qapErroTexto(err), 'error'); this.sair(); return true; }
-    if (err.codigo === 'link') { this.erroTela(QAP_ERROS.link); return true; }
+    if (['pin', 'sem_pin', 'sessao'].includes(err.codigo)) { this.toast(qapErroTexto(err), 'error'); this.sair(); return true; }
+    if (['link', 'sem_app', 'app_invalido', 'pausado'].includes(err.codigo)) { this.erroTela(qapErroTexto(err), err.codigo); return true; }
     return false;
   }
 
@@ -845,7 +861,7 @@ class QthApp {
     this.ocupado(true, 'Salvando…');
     try {
       const r = await qapApi({
-        acao: 'inventario_salvar', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin,
+        acao: 'inventario_salvar', p: POSTO, k: CHAVE, sessao: this.sessao.sessao,
         tipo: this.invRascunho.tipo, itens: this.invRascunho.itens,
       });
       this.usarInv(r.inv || {});
@@ -861,7 +877,7 @@ class QthApp {
     this.ocupado(true, 'Enviando check-up…');
     try {
       const r = await qapApi({
-        acao: 'checkup', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin,
+        acao: 'checkup', p: POSTO, k: CHAVE, sessao: this.sessao.sessao,
         encontrados: this.invAchados, obs: this.invObs.trim(),
       });
       const uc = r.ultimoCheckup;
@@ -878,6 +894,29 @@ class QthApp {
     } finally {
       this.ocupado(false);
     }
+  }
+
+  // ----- Print e gravação (só existe no app) -----
+
+  ligarSeguranca() {
+    if (QAP_NATIVO || QAP_APP_FALSO) {
+      // o app abre direto neste posto da próxima vez
+      try { localStorage.setItem('qapLinkPosto', location.href); } catch (e) {}
+      document.getElementById('btn-inicio').classList.remove('hidden');
+    }
+    qapOuvirSeguranca((tipo, d) => {
+      const aviso = document.getElementById('aviso-seguranca');
+      if (tipo === 'gravacao' && !d.gravando) { aviso.classList.add('hidden'); return; }
+      document.getElementById('aviso-seguranca-texto').textContent = tipo === 'print'
+        ? 'Print da tela não é permitido neste app.'
+        : 'Gravação de tela não é permitida neste app. Pare a gravação para continuar.';
+      aviso.classList.remove('hidden');
+      if (tipo === 'print') setTimeout(() => aviso.classList.add('hidden'), 5000);
+      try { navigator.vibrate && navigator.vibrate(400); } catch (e) {}
+      const body = { acao: 'alerta_seguranca', p: POSTO, k: CHAVE, tipo, tela: this.aba };
+      if (this.sessao) body.sessao = this.sessao.sessao;
+      qapApi(body).catch(() => {});
+    });
   }
 
   // ----- Diversos -----
@@ -910,7 +949,9 @@ class QthApp {
 
   ligarEventos() {
     document.getElementById('btn-tentar').addEventListener('click', () => this.carregarPosto());
+    document.getElementById('link-apk').href = QAP_APK_URL;
     document.getElementById('btn-sair').addEventListener('click', () => this.sair());
+    document.getElementById('btn-inicio').addEventListener('click', () => { location.href = QAP_MOCK ? 'app.html?mock=1&app=1' : 'app.html'; });
     document.getElementById('acoes').addEventListener('click', e => {
       const b = e.target.closest('[data-tipo]');
       if (b) this.abrirCaptura(b.dataset.tipo);

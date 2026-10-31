@@ -8,6 +8,13 @@ O QAP sai do grupo de WhatsApp e passa a ser enviado pela URL do posto:
 
 Mesma conta do QAP do fechamento (`../Limpar_WhatsApp/financeiro/falhas_qap.ps1`): QAP a cada 60 min, tolerância de 15 min, cada hora inteira sem QAP = 1h de falha, 3/6 = 1h. Só vale como QAP o envio com foto ou vídeo (ou a volta do 3/6).
 
+## App Android e segurança (`../qap-app`)
+- **App** (`qap-app`, gerado no GitHub): abre `app.html` → **Sou QRA** (cola o link do posto uma vez) ou **Supervisão**. Print e gravação de tela saem pretos (`FLAG_SECURE`); Android 14+ avisa print, 15+ avisa gravação → tela vermelha no celular e alarme na aba **🛡️ Segurança** do painel.
+- **Exigir o app** (painel > 🛡️ Segurança): ligado, o servidor recusa pedido sem a assinatura do app (o navegador mostra "baixe o app"). **Pausar tudo** trava todos os QRAs (emergência).
+- **Sessão**: o celular não guarda o PIN. Entrar devolve uma sessão assinada que cai em 16 h, quando o PIN muda e quando o QRA dá o **QTA**.
+- **Servidor**: assinatura do app com prazo e uso único (não dá para repetir pedido copiado), limite de 300 pedidos e 60 envios por posto a cada 10 min, PIN errado bloqueia o QRA (5) e o posto (20) por 15 min, pedido acima de 45 MB recusado. Tudo vai para `procedimentos/seguranca/<dia>`.
+- Testes: `node teste/seguranca.test.js` (camadas do servidor) e `?mock=1&app=1` finge ser o app no teste local (`qapSimularPrint()` no console).
+
 ## Onde fica cada coisa (tudo grátis)
 | Peça | Onde |
 |---|---|

@@ -42,6 +42,11 @@ const QAP_ERROS = {
   checkup: 'A lista de objetos mudou enquanto você conferia. Abra o check-up de novo.',
   acao: 'Função nova ainda não liberada no servidor. Avise a supervisão.',
   resposta: 'Não deu para responder este informe.',
+  sessao: 'Sua sessão terminou. Entre de novo com o seu PIN.',
+  sem_app: 'Este posto agora só funciona pelo app Front Security QAP.',
+  app_invalido: 'App desatualizado ou alterado. Baixe o app de novo pelo link da supervisão.',
+  limite: 'Muitos pedidos em pouco tempo. Aguarde alguns minutos.',
+  pausado: 'O sistema foi pausado pela supervisão. Aguarde ou ligue para a supervisão.',
 };
 
 // Objetos de valor do QTH. Tipo do posto -> categorias (as chaves são iguais às do Code.gs).
@@ -66,10 +71,57 @@ function invNomeCategoria(tipo, cat) {
   return ((INV_TIPOS[tipo] || {}).categorias || {})[cat] || cat;
 }
 
+// ===== App instalado (Android) =====
+// Dentro do app, o plugin nativo "Seguranca" bloqueia print/gravação (FLAG_SECURE), avisa quando
+// alguém tenta e assina cada pedido com o segredo do app. No navegador nada disso existe.
+const QAP_APK_URL = 'https://github.com/DanielSchiavolin/qap-app/releases/latest/download/front-security-qap.apk';
+const QAP_NATIVO = (() => {
+  try { return !!(window.Capacitor && Capacitor.isNativePlatform() && Capacitor.Plugins && Capacitor.Plugins.Seguranca); } catch (e) { return false; }
+})();
+// Teste local (?mock=1&app=1): finge ser o app, assinando com o segredo do mock_server.py
+const QAP_APP_FALSO = QAP_MOCK && new URLSearchParams(location.search).get('app') === '1';
+let qapOffsetRelogio = 0; // relógio do servidor - relógio do celular (a tela do QRA atualiza)
+
+async function hmacHex(chave, texto) {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(chave), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(texto));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Assinatura do pedido: o servidor confere "<ts>.<n>.<acao>.<posto>.<aparelho>"
+async function assinarApp(body) {
+  const ts = Date.now() + qapOffsetRelogio;
+  if (QAP_NATIVO) return Capacitor.Plugins.Seguranca.assinar({ acao: body.acao, p: body.p || '', ts });
+  if (!QAP_APP_FALSO) return null;
+  let disp = '';
+  try { disp = localStorage.getItem('qapDispFalso') || ''; } catch (e) {}
+  if (!disp) { disp = `falso_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`; try { localStorage.setItem('qapDispFalso', disp); } catch (e) {} }
+  const n = crypto.randomUUID().replace(/-/g, '');
+  return { ts, n, disp, v: 1, ass: await hmacHex('segredo-de-teste', `${ts}.${n}.${body.acao}.${body.p || ''}.${disp}`) };
+}
+
+// Avisos de print/gravação vindos do app (ou simulados no teste: qapSimularPrint())
+function qapOuvirSeguranca(cb) {
+  if (QAP_NATIVO) {
+    Capacitor.Plugins.Seguranca.addListener('print', () => cb('print', {}));
+    Capacitor.Plugins.Seguranca.addListener('gravacao', d => cb('gravacao', d || {}));
+  } else if (QAP_APP_FALSO) {
+    window.qapSimularPrint = () => cb('print', {});
+    window.qapSimularGravacao = gravando => cb('gravacao', { gravando });
+  }
+}
+
 // Chamada ao backend. JSON como text/plain: o Apps Script não responde ao "preflight" de CORS.
+// Dentro do app, cada pedido sai assinado (na hora do envio, também para o que estava na fila).
 async function qapApi(body) {
   if (!QAP_CONFIG.apiUrl) throw Object.assign(new Error('config'), { codigo: 'config' });
   let res;
+  try {
+    const app = await assinarApp(body);
+    if (app) body = Object.assign({}, body, { app });
+  } catch (e) {
+    throw Object.assign(new Error('app_invalido'), { codigo: 'app_invalido' });
+  }
   try {
     res = await fetch(QAP_CONFIG.apiUrl, {
       method: 'POST',

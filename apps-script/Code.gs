@@ -7,6 +7,10 @@
  * - Painel da supervisão (index.html): entrega a mídia só para a conta da equipe (ID token do
  *   Firebase Auth). Os arquivos no Drive nunca ficam públicos.
  *
+ * Segurança: a tela do QRA só passa pela "porta" (porta_): sistema não pausado, pedido assinado pelo
+ * app oficial (quando "Exigir app" está ligado), limite de pedidos por posto e sessão assinada (o
+ * celular nunca guarda o PIN). Bloqueios, prints e gravações vão para procedimentos/seguranca.
+ *
  * O Firebase é acessado com o login de quem implantou (dono do projeto), por isso este script não
  * guarda senha nenhuma. Instalação: ../LEIAME.md, seção "Backend no Google Apps Script".
  */
@@ -33,6 +37,36 @@ const INV_CATEGORIAS = { stand: ['copa', 'decorado', 'salao', 'area_externa'], t
 const INV_CHAVE = /^[a-z0-9_]{1,40}$/;
 const INV_MAX_ITENS = 150;
 
+// Segurança
+const SESSAO_HORAS = 16;                    // depois disso o QRA digita o PIN de novo
+const APP_JANELA_MS = 6 * 3600000;          // relógio do celular pode estar até 6 h errado
+const MAX_CORPO = 45 * 1024 * 1024;         // pedido maior que isso nem é lido
+const POSTO_PIN_ERROS = 20;                 // erros de PIN no mesmo posto em 15 min = link travado 15 min
+const LIMITE_POSTO = 300;                   // pedidos por posto a cada 10 min
+const LIMITE_ENVIOS = 60;                   // envios (QAP, ronda...) por posto a cada 10 min
+const ALERTAS_APP = ['print', 'gravacao'];
+
+// Ações da tela do QRA (passam pela "porta": app oficial, limites, sistema não pausado)
+const ACOES_QRA = {
+  posto: req => posto_(req),
+  entrar: req => entrar_(req),
+  evento: req => evento_(req),
+  inventario: req => inventario_(req),
+  inventario_salvar: req => inventarioSalvar_(req),
+  checkup: req => checkup_(req),
+  mensagens: req => mensagens_(req),
+  midia_resp: req => midiaResp_(req),
+  alerta_seguranca: req => alertaSeguranca_(req),
+};
+// Ações do painel (conferem o login da equipe)
+const ACOES_EQUIPE = {
+  midia: req => midia_(req),
+  responder: req => responder_(req),
+  sistema: req => sistemaConfig_(req),
+  segredo_app: req => segredoAppEquipe_(req),
+  alerta_seguranca_equipe: req => alertaSegurancaEquipe_(req),
+};
+
 function doGet() {
   return json_({ ok: true, agora: Date.now() });
 }
@@ -40,25 +74,168 @@ function doGet() {
 // A tela manda JSON como text/plain (sem "preflight" de CORS, que o Apps Script não atende)
 function doPost(e) {
   try {
-    const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    switch (req.acao) {
-      case 'posto': return json_(posto_(req));
-      case 'entrar': return json_(entrar_(req));
-      case 'evento': return json_(evento_(req));
-      case 'midia': return json_(midia_(req));
-      case 'inventario': return json_(inventario_(req));
-      case 'inventario_salvar': return json_(inventarioSalvar_(req));
-      case 'checkup': return json_(checkup_(req));
-      case 'responder': return json_(responder_(req));
-      case 'mensagens': return json_(mensagens_(req));
-      case 'midia_resp': return json_(midiaResp_(req));
-      default: return json_({ ok: false, erro: 'acao' });
+    if (e && e.postData && e.postData.length > MAX_CORPO) throw erro_('grande');
+    let req;
+    try { req = JSON.parse((e && e.postData && e.postData.contents) || '{}'); } catch (x) { throw erro_('acao'); }
+    if (!req || typeof req !== 'object') throw erro_('acao');
+    if (ACOES_QRA[req.acao]) {
+      porta_(req);
+      return json_(ACOES_QRA[req.acao](req));
     }
+    if (ACOES_EQUIPE[req.acao]) return json_(ACOES_EQUIPE[req.acao](req));
+    throw erro_('acao');
   } catch (err) {
     if (err && err.qap) return json_({ ok: false, erro: err.qap });
     console.error(err && err.stack || err);
     return json_({ ok: false, erro: 'interno' });
   }
+}
+
+// ===== Porta de entrada da tela do QRA =====
+
+function porta_(req) {
+  const sis = sistema_();
+  if (sis.pausado) throw erro_('pausado');
+  if (!ID_VALIDO.test(String(req.p || ''))) throw erro_('link');
+  req.aparelho = checarApp_(req, sis);
+  limite_(`p_${req.p}`, LIMITE_POSTO, 600);
+  if (req.acao === 'evento') limite_(`e_${req.p}`, LIMITE_ENVIOS, 600);
+}
+
+// Pedido assinado pelo app oficial: HMAC-SHA256("<ts>.<n>.<acao>.<posto>.<aparelho>") com o
+// segredo que vai dentro do app. "n" só vale uma vez (não dá para repetir um pedido copiado).
+// Com "Exigir app" desligado, o navegador ainda passa (sem assinatura).
+function checarApp_(req, sis) {
+  const a = req.app;
+  if (!a || typeof a !== 'object') {
+    if (!sis.exigirApp) return null;
+    registrarSeguranca_('sem_app', { p: req.p });
+    throw erro_('sem_app');
+  }
+  const ts = Number(a.ts), n = String(a.n || ''), disp = String(a.disp || '');
+  const certo = /^[A-Za-z0-9_\-]{8,64}$/.test(n) && /^[A-Za-z0-9_\-]{8,64}$/.test(disp) && isFinite(ts)
+    && Math.abs(Date.now() - ts) < APP_JANELA_MS
+    && String(a.ass || '') === hmac_(`${ts}.${n}.${req.acao}.${req.p}.${disp}`, segredoApp_());
+  const cache = CacheService.getScriptCache();
+  if (!certo || cache.get(`n_${n}`)) {
+    registrarSeguranca_('app_invalido', { p: req.p, disp: disp.slice(0, 64) });
+    throw erro_('app_invalido');
+  }
+  cache.put(`n_${n}`, '1', 21600);
+  return { disp, versao: Number(a.v) || 0 };
+}
+
+// Conta pedidos numa janela; passou do máximo = recusa (e registra uma vez)
+function limite_(chave, max, janelaS) {
+  const cache = CacheService.getScriptCache();
+  const k = `lim_${chave}`;
+  const n = Number(cache.get(k) || 0) + 1;
+  cache.put(k, String(n), janelaS);
+  if (n > max) {
+    if (n === max + 1) registrarSeguranca_('limite', { chave });
+    throw erro_('limite');
+  }
+}
+
+// procedimentos/sistema: { exigirApp, pausado } (só o painel muda, pela ação "sistema")
+function sistema_() {
+  return doCache_('sistema', 60, () => db_('procedimentos/sistema')) || {};
+}
+
+function sistemaConfig_(req) {
+  checarEquipe_(req.token);
+  const mudar = {};
+  ['exigirApp', 'pausado'].forEach(k => { if (typeof req[k] === 'boolean') mudar[k] = req[k]; });
+  if (!Object.keys(mudar).length) throw erro_('acao');
+  db_('procedimentos/sistema', 'patch', mudar);
+  CacheService.getScriptCache().remove('sistema');
+  registrarSeguranca_('config', mudar);
+  return { ok: true };
+}
+
+// Segredo que vai dentro do app (o painel mostra para colar no GitHub). Criado na 1ª vez.
+function segredoApp_() {
+  const props = PropertiesService.getScriptProperties();
+  let s = props.getProperty('APP_SEGREDO');
+  if (!s) {
+    s = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+    props.setProperty('APP_SEGREDO', s);
+  }
+  return s;
+}
+
+function segredoAppEquipe_(req) {
+  checarEquipe_(req.token);
+  return { ok: true, segredo: segredoApp_() };
+}
+
+// Chave só do servidor para assinar as sessões dos QRAs. Trocar = todo mundo entra de novo.
+function chaveSessao_() {
+  const props = PropertiesService.getScriptProperties();
+  let s = props.getProperty('CHAVE_SESSAO');
+  if (!s) {
+    s = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+    props.setProperty('CHAVE_SESSAO', s);
+  }
+  return s;
+}
+
+// Sessão do QRA: "<qraId>.<posto>.<criada>.<pin>.<assinatura>". O celular não guarda o PIN.
+// Cai sozinha em 16 h, quando o PIN é trocado/removido e quando o QRA dá o QTA.
+function criarSessao_(qraId, p, pinHash) {
+  const base = `${qraId}.${p}.${Date.now()}.${String(pinHash).slice(0, 10)}`;
+  return `${base}.${hmac_(base, chaveSessao_())}`;
+}
+
+function checarSessao_(req) {
+  const partes = String(req.sessao || '').split('.');
+  if (partes.length !== 5) throw erro_('sessao');
+  const [qraId, p, criada, pin8, ass] = partes;
+  if (hmac_(partes.slice(0, 4).join('.'), chaveSessao_()) !== ass || p !== req.p) throw erro_('sessao');
+  if (Date.now() - Number(criada) > SESSAO_HORAS * 3600000) throw erro_('sessao');
+  const pin = doCache_(`pinh_${qraId}`, 300, () => db_(`procedimentos/pins/${qraId}`));
+  if (!pin || String(pin).slice(0, 10) !== pin8) throw erro_('sessao');
+  const qta = Number(doCache_(`qta_${qraId}`, 300, () => db_(`procedimentos/qta/${qraId}`)) || 0);
+  if (qta > Number(criada)) throw erro_('sessao');
+  const q = doCache_(`qra_${qraId}`, 3600, () => db_(`qras/${qraId}`));
+  if (!q) throw erro_('sessao');
+  return { id: qraId, nome: String(q.name || qraId) };
+}
+
+// Print/gravação vistos pelo app (com ou sem QRA logado)
+function alertaSeguranca_(req) {
+  if (!req.aparelho) throw erro_('sem_app');
+  if (ALERTAS_APP.indexOf(req.tipo) < 0) throw erro_('acao');
+  checarLink_(req.p, req.k);
+  let qra = null;
+  try { if (req.sessao) qra = checarSessao_(req); } catch (e) { /* sem sessão: registra só o posto */ }
+  registrarSeguranca_(req.tipo, { p: req.p, qraId: qra ? qra.id : '', qraNome: qra ? qra.nome : '', disp: req.aparelho.disp, tela: String(req.tela || '').slice(0, 20) });
+  return { ok: true };
+}
+
+function alertaSegurancaEquipe_(req) {
+  checarEquipe_(req.token);
+  if (ALERTAS_APP.indexOf(req.tipo) < 0) throw erro_('acao');
+  registrarSeguranca_(req.tipo, { tela: 'painel', qraNome: 'Supervisão' });
+  return { ok: true };
+}
+
+// procedimentos/seguranca/<dia>/<id>: o painel mostra e avisa. O mesmo aviso no máximo 1x a cada 2 min.
+function registrarSeguranca_(tipo, dados) {
+  try {
+    const cache = CacheService.getScriptCache();
+    const k = `log_${sha256_(tipo + JSON.stringify(dados)).slice(0, 24)}`;
+    if (cache.get(k)) return;
+    cache.put(k, '1', 120);
+    db_(`procedimentos/seguranca/${diaOperacional_(new Date())}`, 'post', Object.assign({ tipo, ts: Date.now() }, dados));
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function hmac_(texto, chave) {
+  return Utilities.computeHmacSha256Signature(texto, chave, Utilities.Charset.UTF_8)
+    .map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
 }
 
 // ===== Ações =====
@@ -88,15 +265,17 @@ function posto_(req) {
   };
 }
 
+// Nome + PIN -> sessão assinada (o celular guarda a sessão, nunca o PIN)
 function entrar_(req) {
   checarPosto_(req.p, req.k);
-  const qra = checarPin_(req.qraId, req.pin);
-  return { ok: true, agora: Date.now(), qra };
+  const qra = checarPin_(req.qraId, req.pin, req.p);
+  if (req.aparelho) registrarSeguranca_('entrada', { p: req.p, qraId: qra.id, qraNome: qra.nome, disp: req.aparelho.disp });
+  return { ok: true, agora: Date.now(), qra: { id: qra.id, nome: qra.nome }, sessao: criarSessao_(qra.id, req.p, qra.pinHash) };
 }
 
 function evento_(req) {
   const { post } = checarPosto_(req.p, req.k);
-  const qra = checarPin_(req.qraId, req.pin);
+  const qra = checarSessao_(req);
   if (TIPOS.indexOf(req.tipo) < 0) throw erro_('tipo');
   const midias = Array.isArray(req.midias) ? req.midias.slice(0, MAX_MIDIAS) : [];
   if (PRECISA_IMAGEM.indexOf(req.tipo) >= 0 && !midias.some(m => m && (m.tipo === 'foto' || m.tipo === 'video'))) throw erro_('sem_imagem');
@@ -122,8 +301,15 @@ function evento_(req) {
   };
   ['lat', 'lng', 'prec'].forEach(k => { const v = Number(req[k]); if (req[k] !== null && req[k] !== undefined && req[k] !== '' && isFinite(v)) ev[k] = v; });
   if (req.semLocal) ev.semLocal = String(req.semLocal).slice(0, 60);
+  if (req.aparelho) ev.disp = req.aparelho.disp;
   const r = db_(`procedimentos/eventos/${dia}/${req.p}`, 'post', ev);
-  CacheService.getScriptCache().remove(`ev_${dia}_${req.p}`);
+  const cache = CacheService.getScriptCache();
+  cache.remove(`ev_${dia}_${req.p}`);
+  // QTA: a sessão deste QRA acaba aqui (o próximo precisa do PIN)
+  if (req.tipo === 'passar') {
+    db_(`procedimentos/qta/${qra.id}`, 'put', agora);
+    cache.remove(`qta_${qra.id}`);
+  }
   return { ok: true, id: r && r.name, ts: capturadoEm, dia };
 }
 
@@ -174,28 +360,27 @@ function responder_(req) {
 // supervisão. Chamada a cada minuto pelos celulares abertos, por isso tudo vem do cache
 // (evento_ e responder_ limpam o cache quando muda algo).
 function mensagens_(req) {
-  checarQraLeve_(req);
-  return { ok: true, agora: Date.now(), informes: informesDoTurno_(req.p, req.qraId) };
+  checarLink_(req.p, req.k);
+  const qra = checarSessao_(req);
+  return { ok: true, agora: Date.now(), informes: informesDoTurno_(req.p, qra.id) };
 }
 
 // Áudio de resposta: só se a resposta for para este QRA, num informe do turno dele
 function midiaResp_(req) {
-  checarQraLeve_(req);
+  checarLink_(req.p, req.k);
+  const qra = checarSessao_(req);
   const id = String(req.id || '');
-  const dele = informesDoTurno_(req.p, req.qraId).some(i => i.msgs.some(m => m.midia && m.midia.id === id));
+  const dele = informesDoTurno_(req.p, qra.id).some(i => i.msgs.some(m => m.midia && m.midia.id === id));
   if (!dele) throw erro_('midia');
   const blob = DriveApp.getFileById(id).getBlob();
   return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
 }
 
-// Link + PIN com cache de 5 min. PIN que não bate passa pelo checarPin_ (conta erro e bloqueia).
-function checarQraLeve_(req) {
-  if (!ID_VALIDO.test(String(req.p || '')) || !req.k) throw erro_('link');
-  const cfg = doCache_(`cfg_${req.p}`, 300, () => db_(`procedimentos/config/${req.p}`));
-  if (!cfg || !cfg.chave || cfg.chave !== String(req.k)) throw erro_('link');
-  if (!ID_VALIDO.test(String(req.qraId || ''))) throw erro_('pin');
-  const pin = doCache_(`pinh_${req.qraId}`, 300, () => db_(`procedimentos/pins/${req.qraId}`));
-  if (!pin || !/^\d{4}$/.test(String(req.pin || '')) || sha256_(`${req.qraId}:${req.pin}`) !== pin) checarPin_(req.qraId, req.pin);
+// Link do posto com cache de 5 min (para as chamadas de minuto em minuto)
+function checarLink_(p, k) {
+  if (!ID_VALIDO.test(String(p || '')) || !k) throw erro_('link');
+  const cfg = doCache_(`cfg_${p}`, 300, () => db_(`procedimentos/config/${p}`));
+  if (!cfg || !cfg.chave || cfg.chave !== String(k)) throw erro_('link');
 }
 
 // Informes do QRA neste posto nas últimas 24 h, só depois do último "passar" (QTA) dele.
@@ -238,15 +423,15 @@ function doCache_(chave, segundos, ler) {
 // ===== Objetos de valor do QTH (procedimentos/inventario/<posto> e inventario_hist/<posto>) =====
 
 function inventario_(req) {
-  checarPosto_(req.p, req.k);
-  checarPin_(req.qraId, req.pin);
+  checarLink_(req.p, req.k);
+  checarSessao_(req);
   return { ok: true, inv: db_(`procedimentos/inventario/${req.p}`) || {} };
 }
 
 // O QRA manda a lista inteira (tipo + objetos); o que mudou vai para o histórico com o nome dele
 function inventarioSalvar_(req) {
-  checarPosto_(req.p, req.k);
-  const qra = checarPin_(req.qraId, req.pin);
+  checarLink_(req.p, req.k);
+  const qra = checarSessao_(req);
   const tipo = String(req.tipo || '');
   if (!INV_CATEGORIAS[tipo]) throw erro_('inventario');
   const itens = limparItens_(tipo, req.itens);
@@ -272,8 +457,8 @@ function inventarioSalvar_(req) {
 
 // Check-up geral: o QRA manda quanto encontrou de cada objeto; o esperado vem do banco
 function checkup_(req) {
-  checarPosto_(req.p, req.k);
-  const qra = checarPin_(req.qraId, req.pin);
+  checarLink_(req.p, req.k);
+  const qra = checarSessao_(req);
   const inv = db_(`procedimentos/inventario/${req.p}`) || {};
   const achados = req.encontrados || {};
   const itens = [];
@@ -334,23 +519,29 @@ function checarPosto_(p, k) {
   return { post, cfg };
 }
 
-// PIN de 4 dígitos guardado como SHA-256 de "<qraId>:<pin>". 5 erros = 15 min bloqueado.
-function checarPin_(qraId, pin) {
+// PIN de 4 dígitos guardado como SHA-256 de "<qraId>:<pin>". 5 erros = QRA bloqueado 15 min;
+// 20 erros no mesmo posto (tentando vários QRAs) = posto bloqueado 15 min. Bloqueio vai para o painel.
+function checarPin_(qraId, pin, p) {
   if (!ID_VALIDO.test(String(qraId || ''))) throw erro_('pin');
   const cache = CacheService.getScriptCache();
   const chaveCache = 'pin_' + qraId;
+  const chavePosto = 'pinp_' + p;
   const erros = Number(cache.get(chaveCache) || 0);
-  if (erros >= PIN_TENTATIVAS) throw erro_('bloqueado');
+  const errosPosto = Number(cache.get(chavePosto) || 0);
+  if (erros >= PIN_TENTATIVAS || errosPosto >= POSTO_PIN_ERROS) throw erro_('bloqueado');
   const guardado = db_(`procedimentos/pins/${qraId}`);
   if (!guardado) throw erro_('sem_pin');
   if (!/^\d{4}$/.test(String(pin || '')) || sha256_(`${qraId}:${pin}`) !== guardado) {
     cache.put(chaveCache, String(erros + 1), PIN_BLOQUEIO_S);
+    cache.put(chavePosto, String(errosPosto + 1), PIN_BLOQUEIO_S);
+    if (erros + 1 === PIN_TENTATIVAS) registrarSeguranca_('pin_bloqueado', { p, qraId });
+    if (errosPosto + 1 === POSTO_PIN_ERROS) registrarSeguranca_('posto_bloqueado', { p });
     throw erro_('pin');
   }
   cache.remove(chaveCache);
   const q = db_(`qras/${qraId}`);
   if (!q) throw erro_('pin');
-  return { id: qraId, nome: String(q.name || qraId) };
+  return { id: qraId, nome: String(q.name || qraId), pinHash: guardado };
 }
 
 // ID token do Firebase Auth da conta da equipe (conferido no Google; guardado 10 min em cache)

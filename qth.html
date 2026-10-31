@@ -43,6 +43,15 @@
         <div style="font-size:2.4rem">⚠️</div>
         <div id="erro-texto" class="posto-nome" style="font-size:1.1rem"></div>
         <button id="btn-tentar" class="btn btn-primary">Tentar de novo</button>
+        <!-- fora do app, com "Exigir app" ligado -->
+        <div id="baixar-app" class="baixar-app hidden">
+            <a id="link-apk" class="btn btn-primary" href="#">📲 Baixar o app Front Security QAP</a>
+            <ol>
+                <li>Toque no botão acima e baixe o arquivo.</li>
+                <li>Abra o arquivo baixado. Se o celular pedir, permita <b>instalar apps desta fonte</b>.</li>
+                <li>Abra o app, toque em <b>Sou QRA</b> e cole o link do posto que a supervisão mandou.</li>
+            </ol>
+        </div>
     </section>
 
     <!-- entrar: nome + PIN -->
@@ -91,6 +100,7 @@
 
         <div class="rodape-qra">
             <span id="versao"></span>
+            <button id="btn-inicio" class="btn btn-small hidden">🏠 Início</button>
             <button id="btn-sair" class="btn btn-small">🚪 Trocar QRA</button>
         </div>
     </section>
@@ -122,6 +132,12 @@
     </div>
 
     <div id="enviando" class="enviando hidden">Enviando…</div>
+    <!-- print/gravação detectados pelo app (a tela já sai preta no print; isto avisa a pessoa) -->
+    <div id="aviso-seguranca" class="aviso-seguranca hidden">
+        <div style="font-size:3rem">🚫</div>
+        <div id="aviso-seguranca-texto"></div>
+        <div class="peq">A supervisão foi avisada.</div>
+    </div>
     <div class="toast-container" id="toast-container"></div>
 
     <script src="config.js"></script>

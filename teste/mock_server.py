@@ -12,6 +12,7 @@ Abrir: http://localhost:8765/index.html?mock=1   (painel)
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -26,6 +27,9 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DADOS = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(RAIZ, 'teste', '_dados')
 PORTA = 8765
 TIPOS = {'qti', 'assumir', 'qap', 'ronda', 'pausa_ini', 'pausa_fim', 'passar', 'qru'}
+MOCK_SEGREDO = 'segredo-de-teste'  # no app de verdade o segredo vem do Apps Script (painel > Segurança)
+ACOES_QRA = {'posto', 'entrar', 'evento', 'inventario', 'inventario_salvar', 'checkup', 'mensagens', 'midia_resp', 'alerta_seguranca'}
+NONCES = set()
 INV_CATEGORIAS = {'stand': ['copa', 'decorado', 'salao', 'area_externa'], 'terreno': ['terreno']}
 
 
@@ -125,7 +129,50 @@ def checar_pin(qra_id, pin):
     if sha(f'{qra_id}:{pin}') != guardado:
         raise Erro('pin')
     q = pegar(f'qras/{qra_id}')
-    return {'id': qra_id, 'nome': q['name']}
+    return {'id': qra_id, 'nome': q['name'], 'pinHash': guardado}
+
+
+def assinar(texto):
+    return hmac.new(MOCK_SEGREDO.encode(), texto.encode(), hashlib.sha256).hexdigest()
+
+
+def registrar(tipo, dados):
+    gravar(f'procedimentos/seguranca/{dia_operacional(agora_ms())}/s{uuid.uuid4().hex[:12]}', dict(dados, tipo=tipo, ts=agora_ms()))
+
+
+# Igual ao porta_ do Code.gs: sistema pausado, app assinado (se "Exigir app"), sessão
+def porta(req):
+    sis = pegar('procedimentos/sistema') or {}
+    if sis.get('pausado'):
+        raise Erro('pausado')
+    a = req.get('app')
+    if not a:
+        if sis.get('exigirApp'):
+            registrar('sem_app', {'p': req.get('p')})
+            raise Erro('sem_app')
+        return None
+    texto = f"{a.get('ts')}.{a.get('n')}.{req.get('acao')}.{req.get('p')}.{a.get('disp')}"
+    if a.get('ass') != assinar(texto) or a.get('n') in NONCES or abs(agora_ms() - int(a.get('ts') or 0)) > 6 * 3600000:
+        registrar('app_invalido', {'p': req.get('p')})
+        raise Erro('app_invalido')
+    NONCES.add(a.get('n'))
+    return {'disp': a.get('disp'), 'versao': a.get('v')}
+
+
+def criar_sessao(qra_id, p, pin_hash):
+    base = f'{qra_id}.{p}.{agora_ms()}.{pin_hash[:10]}'
+    return f'{base}.{assinar(base)}'
+
+
+def checar_sessao(req):
+    partes = str(req.get('sessao') or '').split('.')
+    if len(partes) != 5 or assinar('.'.join(partes[:4])) != partes[4] or partes[1] != req.get('p'):
+        raise Erro('sessao')
+    qra_id, _, criada, pin8, _ = partes
+    pin = pegar(f'procedimentos/pins/{qra_id}') or ''
+    if pin[:10] != pin8 or int(pegar(f'procedimentos/qta/{qra_id}') or 0) > int(criada):
+        raise Erro('sessao')
+    return {'id': qra_id, 'nome': pegar(f'qras/{qra_id}')['name']}
 
 
 def ultimo_qap(p):
@@ -156,6 +203,30 @@ def salvar_midia(m):
 
 def api(req):
     acao = req.get('acao')
+    if acao in ACOES_QRA:
+        req['aparelho'] = porta(req)
+    if acao == 'alerta_seguranca':
+        if not req['aparelho']:
+            raise Erro('sem_app')
+        checar_posto(req.get('p'), req.get('k'))
+        try:
+            qra = checar_sessao(req)
+        except Erro:
+            qra = {'id': '', 'nome': ''}
+        registrar(req.get('tipo'), {'p': req['p'], 'qraId': qra['id'], 'qraNome': qra['nome'], 'disp': req['aparelho']['disp'], 'tela': req.get('tela', '')})
+        return {'ok': True}
+    if acao in ('sistema', 'segredo_app', 'alerta_seguranca_equipe'):
+        if req.get('token') != 'mock':
+            raise Erro('equipe')
+        if acao == 'segredo_app':
+            return {'ok': True, 'segredo': MOCK_SEGREDO}
+        if acao == 'alerta_seguranca_equipe':
+            registrar(req.get('tipo'), {'tela': 'painel', 'qraNome': 'Supervisão'})
+            return {'ok': True}
+        mudar = {k: req[k] for k in ('exigirApp', 'pausado') if isinstance(req.get(k), bool)}
+        gravar('procedimentos/sistema', dict(pegar('procedimentos/sistema') or {}, **mudar))
+        registrar('config', mudar)
+        return {'ok': True}
     if acao == 'posto':
         post, cfg = checar_posto(req.get('p'), req.get('k'))
         qras = [{'id': i, 'nome': q['name'], 'doPosto': q.get('postId') == req['p']} for i, q in (pegar('qras') or {}).items()]
@@ -164,10 +235,11 @@ def api(req):
                 'intervaloMin': cfg.get('intervaloMin', 60)}, 'qras': qras, 'ultimo': ultimo_qap(req['p'])}
     if acao == 'entrar':
         checar_posto(req.get('p'), req.get('k'))
-        return {'ok': True, 'agora': agora_ms(), 'qra': checar_pin(req.get('qraId'), req.get('pin'))}
+        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        return {'ok': True, 'agora': agora_ms(), 'qra': {'id': qra['id'], 'nome': qra['nome']}, 'sessao': criar_sessao(qra['id'], req['p'], qra['pinHash'])}
     if acao == 'evento':
         checar_posto(req.get('p'), req.get('k'))
-        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        qra = checar_sessao(req)
         if req.get('tipo') not in TIPOS:
             raise Erro('tipo')
         midias = req.get('midias') or []
@@ -192,6 +264,8 @@ def api(req):
             ev['semLocal'] = req['semLocal']
         eid = 'm' + uuid.uuid4().hex[:12]
         gravar(f'procedimentos/eventos/{dia}/{req["p"]}/{eid}', ev)
+        if req['tipo'] == 'passar':
+            gravar(f'procedimentos/qta/{qra["id"]}', agora)
         return {'ok': True, 'id': eid, 'ts': cap, 'dia': dia}
     if acao == 'midia':
         if req.get('token') != 'mock':
@@ -237,7 +311,7 @@ def api(req):
         return {'ok': True}
     if acao in ('mensagens', 'midia_resp'):
         checar_posto(req.get('p'), req.get('k'))
-        checar_pin(req.get('qraId'), req.get('pin'))
+        req['qraId'] = checar_sessao(req)['id']
         # informes do QRA nas últimas 24 h, só depois do último "passar" (QTA), com as respostas
         itens = []
         limite = agora_ms() - 24 * 3600 * 1000
@@ -264,11 +338,11 @@ def api(req):
             return {'ok': True, 'mime': fm.read(), 'b64': base64.b64encode(f.read()).decode()}
     if acao == 'inventario':
         checar_posto(req.get('p'), req.get('k'))
-        checar_pin(req.get('qraId'), req.get('pin'))
+        checar_sessao(req)
         return {'ok': True, 'inv': pegar(f'procedimentos/inventario/{req["p"]}') or {}}
     if acao == 'inventario_salvar':
         checar_posto(req.get('p'), req.get('k'))
-        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        qra = checar_sessao(req)
         tipo = req.get('tipo')
         if tipo not in INV_CATEGORIAS:
             raise Erro('inventario')
@@ -305,7 +379,7 @@ def api(req):
         return {'ok': True, 'inv': novo, 'mudancas': len(mudancas)}
     if acao == 'checkup':
         checar_posto(req.get('p'), req.get('k'))
-        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        qra = checar_sessao(req)
         inv = pegar(f'procedimentos/inventario/{req["p"]}') or {}
         achados = req.get('encontrados') or {}
         itens, div = [], 0

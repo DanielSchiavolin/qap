@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Front Security QAP</title>
+    <meta name="theme-color" content="#1B2A4A">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="referrer" content="no-referrer">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<!-- Tela inicial do app Android (o app abre esta página). Escolhe entre a tela do QRA e o painel. -->
+<body class="qth">
+
+    <header id="app-header">
+        <div class="header-brand">
+            <svg class="header-logo" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="25" r="18" stroke="#F5A623" stroke-width="4" fill="none"/>
+                <circle cx="20" cy="25" r="10" fill="#1B2A4A" stroke="#1B2A4A" stroke-width="3"/>
+                <circle cx="20" cy="25" r="3" fill="#FFFFFF"/>
+                <circle cx="32" cy="10" r="4" fill="#F5A623"/>
+            </svg>
+            <div class="header-text">
+                <h1 class="header-title">FRONT SECURITY</h1>
+                <span class="header-subtitle">QAP</span>
+            </div>
+        </div>
+    </header>
+
+    <section class="tela">
+        <div id="fora-do-app" class="fila-aviso hidden">Esta página é a tela inicial do app. No navegador, use o link do posto que a supervisão mandou.</div>
+        <div id="atualizar-app" class="fila-aviso hidden"></div>
+
+        <div class="inicio-botoes">
+            <button id="btn-qra" class="acao principal"><span class="ic">📸</span>Sou QRA</button>
+            <div id="posto-salvo" class="posto-sub hidden"></div>
+            <button id="btn-supervisao" class="acao"><span class="ic">🛡️</span>Supervisão</button>
+        </div>
+
+        <!-- QRA: colar o link do posto (só na primeira vez ou para trocar de posto) -->
+        <div id="colar-link" class="config-box hidden">
+            <label class="campo" for="link-posto">Cole aqui o link do posto que a supervisão mandou no WhatsApp</label>
+            <textarea id="link-posto" class="form-input" rows="3" placeholder="https://danielschiavolin.github.io/qap/qth.html?p=…&k=…"></textarea>
+            <div class="inv-rodape" style="margin-top:10px">
+                <button id="btn-cancelar-link" class="btn">Cancelar</button>
+                <button id="btn-salvar-link" class="btn btn-primary">Abrir o posto</button>
+            </div>
+        </div>
+
+        <div class="rodape-qra">
+            <span id="versao-app"></span>
+            <button id="btn-trocar-posto" class="btn btn-small hidden">🔄 Trocar de posto</button>
+        </div>
+    </section>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="config.js"></script>
+    <script>
+    (() => {
+      const BASE = location.href.split(/[?#]/)[0].replace(/[^/]*$/, '');
+      const sufixoTeste = QAP_MOCK ? 'mock=1&app=1' : '';
+      const $ = id => document.getElementById(id);
+      const ler = k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+      const gravar = (k, v) => { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} };
+
+      function toast(msg, tipo) {
+        const t = document.createElement('div');
+        t.className = `toast ${tipo || 'info'}`;
+        t.textContent = msg;
+        $('toast-container').appendChild(t);
+        requestAnimationFrame(() => t.classList.add('show'));
+        setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 5000);
+      }
+
+      // Só aceita link do próprio app (qth.html com posto e chave); nada de abrir site de fora
+      function linkValido(texto) {
+        const m = String(texto || '').match(/qth\.html\?[^\s]+/);
+        if (!m) return '';
+        const q = new URLSearchParams(m[0].split('?')[1]);
+        const p = q.get('p') || '', k = q.get('k') || '';
+        if (!/^[A-Za-z0-9_\-]{1,80}$/.test(p) || !/^[A-Za-z0-9]{6,40}$/.test(k)) return '';
+        return `${BASE}qth.html?p=${encodeURIComponent(p)}&k=${encodeURIComponent(k)}${sufixoTeste ? `&${sufixoTeste}` : ''}`;
+      }
+
+      function mostrarPosto() {
+        const link = ler('qapLinkPosto');
+        const p = link ? new URLSearchParams(link.split('?')[1] || '').get('p') : '';
+        $('posto-salvo').textContent = p ? `Posto salvo: ${p}` : 'Na primeira vez você cola o link do posto.';
+        $('posto-salvo').classList.remove('hidden');
+        $('btn-trocar-posto').classList.toggle('hidden', !p);
+      }
+
+      $('btn-qra').addEventListener('click', () => {
+        const link = linkValido(ler('qapLinkPosto'));
+        if (link) { location.href = link; return; }
+        $('colar-link').classList.remove('hidden');
+        $('link-posto').focus();
+      });
+      $('btn-salvar-link').addEventListener('click', () => {
+        const link = linkValido($('link-posto').value);
+        if (!link) { toast('Esse não é o link do posto. Copie a mensagem da supervisão com o link inteiro.', 'error'); return; }
+        gravar('qapLinkPosto', link);
+        location.href = link;
+      });
+      $('btn-cancelar-link').addEventListener('click', () => $('colar-link').classList.add('hidden'));
+      $('btn-trocar-posto').addEventListener('click', () => {
+        gravar('qapLinkPosto', '');
+        $('link-posto').value = '';
+        mostrarPosto();
+        $('colar-link').classList.remove('hidden');
+      });
+      $('btn-supervisao').addEventListener('click', () => { location.href = `${BASE}index.html${sufixoTeste ? `?${sufixoTeste}` : ''}`; });
+
+      $('fora-do-app').classList.toggle('hidden', QAP_NATIVO || QAP_APP_FALSO);
+      mostrarPosto();
+
+      // App instalado mais velho que o publicado: avisa para baixar de novo
+      if (QAP_NATIVO) {
+        Capacitor.Plugins.Seguranca.info().then(async info => {
+          $('versao-app').textContent = `app v${info.versao}`;
+          const r = await fetch(`app-versao.json?t=${Date.now()}`, { cache: 'no-store' });
+          const { minima } = await r.json();
+          if (Number(info.versao) < Number(minima)) {
+            $('atualizar-app').innerHTML = `⬆️ Tem versão nova do app. <a href="${QAP_APK_URL}" style="color:var(--accent);font-weight:800">Baixar e instalar</a>`;
+            $('atualizar-app').classList.remove('hidden');
+          }
+        }).catch(() => {});
+      }
+    })();
+    </script>
+</body>
+</html>

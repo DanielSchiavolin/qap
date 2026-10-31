@@ -6,9 +6,21 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.9';
+const APP_VERSION = '2026-10-31.10';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
+// Registro de segurança (procedimentos/seguranca/<dia>): nome de cada tipo e quais tocam alarme
+const SEG_TIPOS = {
+  print: { icone: '📸', nome: 'Tentou tirar print', alarme: true },
+  gravacao: { icone: '🎥', nome: 'Gravação de tela', alarme: true },
+  app_invalido: { icone: '⚠️', nome: 'App alterado ou pedido falso', alarme: true },
+  posto_bloqueado: { icone: '🚫', nome: 'Posto bloqueado: muitos PINs errados', alarme: true },
+  pin_bloqueado: { icone: '🔒', nome: 'QRA bloqueado: 5 PINs errados', alarme: true },
+  limite: { icone: '🧱', nome: 'Excesso de pedidos (possível ataque)', alarme: true },
+  sem_app: { icone: '🌐', nome: 'Tentou usar pelo navegador', alarme: false },
+  entrada: { icone: '🔓', nome: 'Entrou no app', alarme: false },
+  config: { icone: '⚙️', nome: 'Configuração de segurança alterada', alarme: false },
+};
 
 // ===== Banco: Firebase de verdade ou o falso do teste local (?mock=1) =====
 
@@ -119,6 +131,10 @@ class PainelApp {
     this.invHist = {};         // histórico do posto aberto
     this.pararInvHist = null;
     this.eventosPorDia = {};
+    this.segPorDia = {};       // registro de segurança de hoje e ontem
+    this.segVistos = null;     // ids já mostrados (null = primeira carga: não alarma o que já existia)
+    this.segNaoVistos = 0;
+    this.sistema = {};         // { exigirApp, pausado }
     this.respostasPorDia = {};  // like / mensagem / áudio da supervisão em cada informe
     this.respondendo = null;    // { ev, modo: 'texto' | 'audio', gravador }
     this.escutasDia = {};
@@ -153,6 +169,13 @@ class PainelApp {
     this.banco.listen('procedimentos/config', d => { this.cfgs = d; this.carregado.config = true; this.agendarRender(); }, erro);
     this.banco.listen('procedimentos/pins', d => { this.pins = d; this.renderPins(); }, erro);
     this.banco.listen('procedimentos/inventario', d => { this.invs = d; this.agendarRender(); if (this.postoAberto) this.renderInv(); }, erro);
+    this.banco.listen('procedimentos/sistema', d => { this.sistema = d; this.renderSistema(); }, erro);
+    document.getElementById('seg-link-apk').textContent = QAP_APK_URL;
+    // painel aberto dentro do app: print bloqueado e avisado também
+    qapOuvirSeguranca(async tipo => {
+      this.toast(tipo === 'print' ? '🚫 Print não é permitido no app.' : '🚫 Gravação de tela não é permitida no app.', 'error');
+      try { await qapApi({ acao: 'alerta_seguranca_equipe', token: await this.banco.token(), tipo }); } catch (e) { /* sem internet */ }
+    });
     this.escutarDias();
     setInterval(() => { this.escutarDias(); this.agendarRender(); }, 30000);
     setInterval(() => this.relogio(), 1000);
@@ -171,6 +194,7 @@ class PainelApp {
         delete this.escutasDia[d];
         delete this.eventosPorDia[d];
         delete this.respostasPorDia[d];
+        delete this.segPorDia[d];
       }
     });
     dias.forEach(d => {
@@ -184,7 +208,11 @@ class PainelApp {
         this.respostasPorDia[d] = data;
         if (this.postoAberto) this.renderRespostas();
       });
-      this.escutasDia[d] = () => { pararEventos(); pararRespostas(); };
+      const pararSeg = this.banco.listen(`procedimentos/seguranca/${d}`, data => {
+        this.segPorDia[d] = data;
+        this.renderSeguranca();
+      });
+      this.escutasDia[d] = () => { pararEventos(); pararRespostas(); pararSeg(); };
     });
   }
 
@@ -635,6 +663,92 @@ class PainelApp {
     await this.gravar(this.banco.remove(`procedimentos/pins/${qraId}`), 'PIN removido.');
   }
 
+  // ----- Segurança -----
+
+  renderSistema() {
+    document.getElementById('seg-exigir').checked = !!this.sistema.exigirApp;
+    document.getElementById('seg-pausar').checked = !!this.sistema.pausado;
+    const aviso = document.getElementById('aviso-config');
+    if (this.sistema.pausado) {
+      aviso.innerHTML = '<strong>⛔ Sistema pausado.</strong> Nenhum QRA consegue enviar. Desligue em 🛡️ Segurança.';
+      aviso.classList.remove('hidden');
+    } else if (QAP_CONFIG.apiUrl) {
+      aviso.classList.add('hidden');
+    }
+  }
+
+  async mudarSistema(campo, valor) {
+    const textos = {
+      exigirApp: valor
+        ? 'Todos os QRAs vão precisar do app a partir de agora. Quem ainda não instalou não consegue mandar QAP.'
+        : 'O link do posto volta a funcionar no navegador (sem bloqueio de print).',
+      pausado: valor
+        ? 'Nenhum QRA vai conseguir entrar nem mandar nada até você desligar.'
+        : 'Os QRAs voltam a conseguir enviar.',
+    };
+    const botao = { exigirApp: valor ? 'Exigir o app' : 'Liberar navegador', pausado: valor ? 'Pausar tudo' : 'Voltar a funcionar' };
+    if (!await this.confirmar(textos[campo], botao[campo])) return this.renderSistema();
+    try {
+      await qapApi({ acao: 'sistema', token: await this.banco.token(), [campo]: valor });
+      this.toast('✅ Segurança atualizada (vale em até 1 minuto).', 'success');
+    } catch (err) {
+      this.toast(`❌ ${qapErroTexto(err)}`, 'error');
+      this.renderSistema();
+    }
+  }
+
+  async mostrarSegredo() {
+    if (!await this.confirmar('O código do app só deve ir para o GitHub (segredo APP_SEGREDO). Mostrar agora?', 'Mostrar')) return;
+    try {
+      const r = await qapApi({ acao: 'segredo_app', token: await this.banco.token() });
+      document.getElementById('segredo-valor').textContent = r.segredo;
+      this.abrirModal('modal-segredo');
+    } catch (err) {
+      this.toast(`❌ ${qapErroTexto(err)}`, 'error');
+    }
+  }
+
+  // Lista de hoje e ontem + alarme (som, notificação, contador) para o que chegou depois de abrir o painel
+  renderSeguranca() {
+    const itens = [];
+    Object.keys(this.segPorDia).forEach(d => Object.entries(this.segPorDia[d] || {}).forEach(([id, x]) => { if (x && x.ts) itens.push(Object.assign({ id }, x)); }));
+    itens.sort((a, b) => b.ts - a.ts);
+    if (this.segVistos === null) {
+      this.segVistos = new Set(itens.map(x => x.id));
+    } else {
+      const novos = itens.filter(x => !this.segVistos.has(x.id));
+      novos.forEach(x => this.segVistos.add(x.id));
+      const graves = novos.filter(x => (SEG_TIPOS[x.tipo] || {}).alarme);
+      if (graves.length) this.alarmeSeguranca(graves);
+    }
+    const nomePosto = p => (this.sched.posts[p] || {}).name || p || '';
+    document.getElementById('seg-lista').innerHTML = itens.slice(0, 200).map(x => {
+      const t = SEG_TIPOS[x.tipo] || { icone: '•', nome: x.tipo };
+      const quem = [x.qraNome, nomePosto(x.p), x.tela === 'painel' ? 'painel' : '', x.disp ? `aparelho …${String(x.disp).slice(-6)}` : ''].filter(Boolean).join(' · ');
+      const extra = x.tipo === 'config'
+        ? ` (${['exigirApp', 'pausado'].filter(k => k in x).map(k => `${k === 'exigirApp' ? 'exigir app' : 'pausar'}: ${x[k] ? 'ligado' : 'desligado'}`).join(', ')})`
+        : '';
+      return `<div class="evento${t.alarme ? ' seg-grave' : ''}"><div class="evento-topo"><strong>${t.icone} ${escHtml(t.nome)}${escHtml(extra)}</strong><span>${dataHora(x.ts)}</span></div>
+        ${quem ? `<div class="evento-info">${escHtml(quem)}</div>` : ''}</div>`;
+    }).join('') || '<div class="card-linha fraca">Nada registrado hoje nem ontem.</div>';
+    const badge = document.getElementById('seg-badge');
+    badge.textContent = this.segNaoVistos || '';
+    badge.classList.toggle('hidden', !this.segNaoVistos);
+  }
+
+  alarmeSeguranca(novos) {
+    const naAba = !document.getElementById('view-seg').classList.contains('hidden');
+    if (!naAba) this.segNaoVistos += novos.length;
+    const x = novos[0];
+    const t = SEG_TIPOS[x.tipo] || { icone: '⚠️', nome: x.tipo };
+    const onde = [x.qraNome, (this.sched.posts[x.p] || {}).name].filter(Boolean).join(' · ');
+    this.toast(`${t.icone} ${t.nome}${onde ? ` — ${onde}` : ''}`, 'error');
+    this.sound.alarm();
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { new Notification(`${t.icone} Segurança — ${t.nome}`, { body: onde, tag: `seg-${x.id}` }); } catch (e) { /* sem suporte */ }
+    }
+  }
+
   // ----- Diversos -----
 
   async gravar(promessa, msgOk) {
@@ -684,6 +798,7 @@ class PainelApp {
       if (this.pararInvHist) { this.pararInvHist(); this.pararInvHist = null; }
     }
     if (m.id === 'modal-pin') document.getElementById('pin-numero').textContent = '';
+    if (m.id === 'modal-segredo') document.getElementById('segredo-valor').textContent = '';
   }
 
   atualizarBotoes() {
@@ -721,6 +836,8 @@ class PainelApp {
       document.querySelectorAll('.view-tabs [data-view]').forEach(x => x.classList.toggle('active', x === b));
       document.getElementById('view-agora').classList.toggle('hidden', b.dataset.view !== 'agora');
       document.getElementById('view-pins').classList.toggle('hidden', b.dataset.view !== 'pins');
+      document.getElementById('view-seg').classList.toggle('hidden', b.dataset.view !== 'seg');
+      if (b.dataset.view === 'seg') { this.segNaoVistos = 0; this.renderSeguranca(); }
     }));
     document.getElementById('busca').addEventListener('input', () => this.agendarRender());
     document.getElementById('mostrar-fora').addEventListener('change', () => this.agendarRender());
@@ -760,6 +877,17 @@ class PainelApp {
       this.renderFeed();
     }));
     document.getElementById('confirma-sim').addEventListener('click', () => this.responderConfirma(true));
+    document.getElementById('seg-exigir').addEventListener('change', e => this.mudarSistema('exigirApp', e.target.checked));
+    document.getElementById('seg-pausar').addEventListener('change', e => this.mudarSistema('pausado', e.target.checked));
+    document.getElementById('seg-segredo').addEventListener('click', () => this.mostrarSegredo());
+    document.getElementById('segredo-copiar').addEventListener('click', () => navigator.clipboard.writeText(document.getElementById('segredo-valor').textContent)
+      .then(() => this.toast('📋 Código copiado.', 'success'), () => this.toast('Selecione o código e copie.', 'error')));
+    document.getElementById('seg-copiar-apk').addEventListener('click', () => navigator.clipboard.writeText(QAP_APK_URL)
+      .then(() => this.toast('📋 Link copiado.', 'success'), () => this.toast('Selecione o link e copie.', 'error')));
+    document.getElementById('seg-whats-apk').addEventListener('click', () => {
+      const texto = `📲 *App Front Security QAP*\nA partir de agora o QAP é só pelo app (Android).\n1) Baixe: ${QAP_APK_URL}\n2) Abra o arquivo e permita instalar\n3) No app toque em *Sou QRA* e cole o link do seu posto\nQSL?`;
+      window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+    });
     const feed = document.getElementById('mp-feed');
     feed.addEventListener('click', e => {
       const b = e.target.closest('[data-resp-acao]');
