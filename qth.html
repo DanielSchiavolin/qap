@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Front Security - QAP do posto</title>
+    <meta name="theme-color" content="#1B2A4A">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="referrer" content="no-referrer">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="qth">
+
+    <header id="app-header">
+        <div class="header-brand">
+            <svg class="header-logo" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="25" r="18" stroke="#F5A623" stroke-width="4" fill="none"/>
+                <circle cx="20" cy="25" r="10" fill="#1B2A4A" stroke="#1B2A4A" stroke-width="3"/>
+                <circle cx="20" cy="25" r="3" fill="#FFFFFF"/>
+                <circle cx="32" cy="10" r="4" fill="#F5A623"/>
+            </svg>
+            <div class="header-text">
+                <h1 class="header-title">FRONT SECURITY</h1>
+                <span class="header-subtitle">QAP do posto</span>
+            </div>
+        </div>
+        <div class="header-info">
+            <div id="clock">--:--</div>
+        </div>
+    </header>
+
+    <!-- carregando / erro -->
+    <section id="tela-carregando" class="tela tela-centro">
+        <div class="posto-sub">Carregando o posto…</div>
+    </section>
+
+    <section id="tela-erro" class="tela tela-centro hidden">
+        <div style="font-size:2.4rem">⚠️</div>
+        <div id="erro-texto" class="posto-nome" style="font-size:1.1rem"></div>
+        <button id="btn-tentar" class="btn btn-primary">Tentar de novo</button>
+    </section>
+
+    <!-- entrar: nome + PIN -->
+    <section id="tela-entrar" class="tela hidden">
+        <div class="posto-nome" id="entrar-posto"></div>
+        <div class="posto-sub">Escolha seu nome e digite seu PIN</div>
+        <label class="campo" for="sel-qra">Seu nome (QRA)</label>
+        <select id="sel-qra" class="form-input"></select>
+        <label class="campo">PIN (4 números)</label>
+        <div id="pin-pontos" class="pin-pontos" style="text-align:center"></div>
+        <div class="teclado" id="teclado"></div>
+        <p class="posto-sub" style="margin-top:12px;text-align:center">Sem PIN? Peça à supervisão.</p>
+    </section>
+
+    <!-- principal -->
+    <section id="tela-principal" class="tela hidden">
+        <div class="posto-nome" id="principal-posto"></div>
+        <div class="posto-sub" id="principal-qra"></div>
+
+        <div id="status-qap" class="status-qap">
+            <div class="grande" id="status-grande">--</div>
+            <div class="peq" id="status-peq"></div>
+        </div>
+
+        <div id="fila-aviso" class="fila-aviso hidden"></div>
+
+        <div class="acoes" id="acoes"></div>
+
+        <div class="rodape-qra">
+            <span id="versao"></span>
+            <button id="btn-sair" class="btn btn-small">🚪 Trocar QRA</button>
+        </div>
+    </section>
+
+    <!-- captura -->
+    <div id="captura" class="captura hidden">
+        <div class="captura-topo">
+            <strong id="cap-titulo"></strong>
+            <button id="cap-fechar" class="btn btn-small">✕ Cancelar</button>
+        </div>
+        <div class="captura-corpo">
+            <div class="visor" id="visor">
+                <video id="cap-video" playsinline muted autoplay></video>
+                <div id="cap-rec" class="rec hidden"></div>
+                <div id="cap-msg" class="msg hidden"></div>
+            </div>
+            <div class="captura-botoes" id="cap-botoes-imagem">
+                <button id="btn-foto" class="btn btn-primary">📸 Foto</button>
+                <button id="btn-video" class="btn btn-primary">🎥 Vídeo 15 s</button>
+            </div>
+            <button id="btn-audio" class="btn">🎙️ Gravar áudio (até 15 s)</button>
+            <div class="anexos" id="anexos"></div>
+            <textarea id="cap-texto" class="form-input" rows="2" maxlength="500" placeholder="Observação (opcional)"></textarea>
+            <div class="posto-sub" id="cap-local"></div>
+        </div>
+        <div class="captura-rodape">
+            <button id="btn-enviar" class="btn btn-primary">Enviar</button>
+        </div>
+    </div>
+
+    <div id="enviando" class="enviando hidden">Enviando…</div>
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="config.js"></script>
+    <script src="qth.js"></script>
+</body>
+</html>

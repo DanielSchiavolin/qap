@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Front Security - QAP</title>
+    <meta name="description" content="Painel da supervisão: QAPs dos postos em tempo real, com alerta quando o QAP não vem.">
+    <meta name="theme-color" content="#1B2A4A">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="referrer" content="no-referrer">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header id="app-header">
+        <div class="header-brand">
+            <svg class="header-logo" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="25" r="18" stroke="#F5A623" stroke-width="4" fill="none"/>
+                <circle cx="20" cy="25" r="10" fill="#1B2A4A" stroke="#1B2A4A" stroke-width="3"/>
+                <circle cx="20" cy="25" r="3" fill="#FFFFFF"/>
+                <circle cx="32" cy="10" r="4" fill="#F5A623"/>
+            </svg>
+            <div class="header-text">
+                <h1 class="header-title">FRONT SECURITY</h1>
+                <span class="header-subtitle">QAP · Supervisão</span>
+            </div>
+        </div>
+        <div class="header-info">
+            <div><span id="connection-status" class="conn-dot disconnected"></span><span id="connection-text" class="conn-text">Offline</span></div>
+            <div id="clock">--:--:--</div>
+            <span id="badge-alertas" class="badge">Carregando…</span>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div id="aviso-config" class="aviso-topo aviso-config hidden"></div>
+        <div id="aviso-alertas" class="aviso-topo hidden"></div>
+
+        <nav class="view-tabs" role="tablist">
+            <button class="view-tab active" data-view="agora" role="tab">🚨 Postos agora</button>
+            <button class="view-tab" data-view="pins" role="tab">🔑 PINs dos QRAs</button>
+        </nav>
+
+        <section id="view-agora" class="view">
+            <div class="toolbar">
+                <input type="search" id="busca" class="form-input" placeholder="🔎 Buscar posto ou QRA…">
+                <label class="linha" style="font-size:.85rem;color:var(--muted)"><input type="checkbox" id="mostrar-fora"> Mostrar postos fora de turno</label>
+                <button id="btn-som" class="btn btn-small">🔊 Som ligado</button>
+                <button id="btn-notif" class="btn btn-small">🔔 Ativar notificações</button>
+            </div>
+            <div id="postos"></div>
+        </section>
+
+        <section id="view-pins" class="view hidden">
+            <div class="toolbar">
+                <input type="search" id="busca-qra" class="form-input" placeholder="🔎 Buscar QRA ou posto…">
+            </div>
+            <p class="card-linha fraca" style="margin-bottom:10px">O QRA entra na tela do posto com o nome e este PIN de 4 números. O PIN fica guardado só como código (hash): depois de fechar a janela, ninguém consegue ver o número. Se o QRA esquecer, gere outro.</p>
+            <div id="lista-qras" class="lista-qras"></div>
+        </section>
+    </main>
+
+    <!-- posto: feed + configuração -->
+    <div id="modal-posto" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="mp-titulo"></h2>
+                <button class="modal-close" data-fechar>✕</button>
+            </div>
+            <div id="mp-resumo" class="card-linha"></div>
+            <div class="config-box">
+                <label class="linha"><input type="checkbox" id="cfg-ativo"> <strong>Cobrar QAP neste posto</strong> (alerta quando atrasar)</label>
+                <div class="linha" style="margin-top:8px">
+                    <label class="campo" style="margin:0">QAP a cada <input type="number" id="cfg-intervalo" class="form-input" style="width:80px;display:inline-block;padding:6px" min="15" max="240" step="5"> min</label>
+                    <label class="campo" style="margin:0">tolerância <input type="number" id="cfg-tolerancia" class="form-input" style="width:70px;display:inline-block;padding:6px" min="0" max="60" step="5"> min</label>
+                    <button id="cfg-salvar" class="btn btn-small btn-primary">Salvar</button>
+                </div>
+                <label class="campo">Link do posto (mande para os QRAs deste QTH)</label>
+                <div id="cfg-link" class="link-qth"></div>
+                <div class="linha">
+                    <button id="cfg-copiar" class="btn btn-small">📋 Copiar link</button>
+                    <button id="cfg-whats" class="btn btn-small">📱 Mandar no WhatsApp</button>
+                    <button id="cfg-novo-link" class="btn btn-small btn-danger">♻️ Gerar link novo</button>
+                </div>
+            </div>
+            <div class="linha" style="margin-top:12px">
+                <button class="btn btn-small view-tab active" data-dia="0">Hoje</button>
+                <button class="btn btn-small view-tab" data-dia="1">Ontem</button>
+            </div>
+            <div id="mp-feed" class="feed"></div>
+        </div>
+    </div>
+
+    <!-- PIN gerado -->
+    <div id="modal-pin" class="modal-overlay">
+        <div class="modal-content" style="max-width:380px">
+            <div class="modal-header">
+                <h2>🔑 PIN de <span id="pin-nome"></span></h2>
+                <button class="modal-close" data-fechar>✕</button>
+            </div>
+            <p class="card-linha">Passe este PIN para o QRA (pessoalmente ou por mensagem só para ele). Depois de fechar, ele não aparece mais.</p>
+            <div id="pin-numero" class="pin-grande"></div>
+            <button class="btn btn-primary" style="width:100%" data-fechar>Já anotei</button>
+        </div>
+    </div>
+
+    <!-- quem usa este aparelho (vai na marca d'água) -->
+    <div id="modal-quem" class="modal-overlay">
+        <div class="modal-content" style="max-width:380px">
+            <div class="modal-header"><h2>👤 Quem usa este aparelho?</h2></div>
+            <p class="card-linha">O nome aparece como marca d'água em toda foto e vídeo que você abrir aqui.</p>
+            <input id="quem-nome" class="form-input" maxlength="30" placeholder="Ex.: Tuca">
+            <button id="quem-salvar" class="btn btn-primary" style="width:100%;margin-top:10px">Salvar</button>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <script src="auth-gate.js"></script>
+    <script src="config.js"></script>
+    <script src="escala.js"></script>
+    <script src="qap-regras.js"></script>
+    <script src="painel.js"></script>
+</body>
+</html>
