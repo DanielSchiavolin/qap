@@ -2,11 +2,12 @@
 // Front Security - App QAP: tela do QRA
 // Abre pela URL do QTH (qth.html?p=<posto>&k=<chave>). O QRA entra com nome + PIN e envia QAP
 // com foto ou vídeo tirados na hora (sem galeria), áudio de até 15 s e localização.
+// Aba "Objetos de valor": lista do QTH por categoria, adicionar/remover e check-up geral.
 // Não mostra mídia de ninguém: o QRA só envia. Não usa a senha da equipe.
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.5';
+const APP_VERSION = '2026-10-31.6';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -196,6 +197,14 @@ class QthApp {
     this.pinDigitado = '';
     this.cap = null;          // estado da captura aberta
     this.enviandoFila = false;
+    // objetos de valor: como está no servidor, o rascunho que o QRA está mexendo e o check-up aberto
+    this.inv = null;
+    this.invRascunho = null;
+    this.invModo = 'lista';   // lista | checkup
+    this.invAdd = null;       // categoria com o "Adicionar objeto" aberto
+    this.invAddQtd = 1;
+    this.invAchados = {};     // check-up: "<categoria>/<objeto>" -> quantidade encontrada
+    this.invObs = '';
   }
 
   agora() { return Date.now() + this.offset; }
@@ -310,6 +319,9 @@ class QthApp {
   sair() {
     try { localStorage.removeItem(this.chaveSessao()); } catch (e) {}
     this.sessao = null;
+    this.inv = null;
+    this.invRascunho = null;
+    this.mostrarAba('qap');
     this.abrirEntrar();
   }
 
@@ -587,6 +599,233 @@ class QthApp {
     el.classList.toggle('hidden', n === 0);
   }
 
+  // ----- Objetos de valor do QTH -----
+
+  mostrarAba(aba) {
+    document.querySelectorAll('#abas-qra [data-aba]').forEach(b => b.classList.toggle('active', b.dataset.aba === aba));
+    document.getElementById('aba-qap').classList.toggle('hidden', aba !== 'qap');
+    document.getElementById('aba-inv').classList.toggle('hidden', aba !== 'inv');
+    if (aba === 'inv' && !this.invRascunho) this.carregarInv();
+  }
+
+  async carregarInv() {
+    const el = document.getElementById('inv');
+    el.innerHTML = '<div class="inv-vazio">Carregando os objetos…</div>';
+    try {
+      const r = await qapApi({ acao: 'inventario', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin });
+      this.usarInv(r.inv || {});
+    } catch (err) {
+      if (this.erroSessao(err)) return;
+      el.innerHTML = `<div class="inv-vazio">⚠️ ${escHtml(qapErroTexto(err))}</div><button class="btn" style="width:100%" data-inv="recarregar">Tentar de novo</button>`;
+    }
+  }
+
+  usarInv(inv) {
+    this.inv = inv;
+    this.invRascunho = { tipo: inv.tipo || '', itens: JSON.parse(JSON.stringify(inv.itens || {})) };
+    this.invModo = 'lista';
+    this.invAdd = null;
+    this.renderInv();
+  }
+
+  // PIN ou link trocados no meio do caminho: volta para a tela certa. Devolve true se tratou.
+  erroSessao(err) {
+    if (err.codigo === 'pin' || err.codigo === 'sem_pin') { this.toast(qapErroTexto(err), 'error'); this.sair(); return true; }
+    if (err.codigo === 'link') { this.erroTela(QAP_ERROS.link); return true; }
+    return false;
+  }
+
+  // Quantos objetos o rascunho tem de diferente do servidor (+1 se trocou o tipo do posto)
+  invMudancas() {
+    if (!this.inv || !this.invRascunho) return 0;
+    const a = this.inv.itens || {}, d = this.invRascunho.itens;
+    let n = (this.inv.tipo || '') !== this.invRascunho.tipo ? 1 : 0;
+    new Set([...Object.keys(a), ...Object.keys(d)]).forEach(cat => {
+      const x = a[cat] || {}, y = d[cat] || {};
+      new Set([...Object.keys(x), ...Object.keys(y)]).forEach(k => { if (((x[k] || {}).qtd || 0) !== ((y[k] || {}).qtd || 0)) n++; });
+    });
+    return n;
+  }
+
+  invOcupado() { return this.invMudancas() > 0 || this.invModo === 'checkup'; }
+
+  // Objetos de uma categoria em ordem alfabética: [[chave, {nome, qtd}], ...]
+  invLista(itens, cat) {
+    return Object.entries(itens[cat] || {}).sort((a, b) => a[1].nome.localeCompare(b[1].nome, 'pt-BR'));
+  }
+
+  renderInv() {
+    const el = document.getElementById('inv');
+    const r = this.invRascunho;
+    if (!r) return;
+    if (!r.tipo) {
+      el.innerHTML = `<div class="inv-vazio">Que tipo de posto é este?</div>
+        <div class="captura-botoes">${Object.entries(INV_TIPOS).map(([id, t]) =>
+          `<button class="btn btn-primary" data-inv="tipo" data-tipo="${id}">${t.icone} ${t.nome}</button>`).join('')}</div>`;
+      return;
+    }
+    if (this.invModo === 'checkup') return this.renderCheckup();
+    const tipo = INV_TIPOS[r.tipo];
+    const total = Object.keys(tipo.categorias).reduce((n, cat) => n + Object.keys(r.itens[cat] || {}).length, 0);
+    const uc = this.inv.ultimoCheckup;
+    const mud = this.invMudancas();
+    let h = `<div class="inv-topo"><strong>${tipo.icone} ${tipo.nome}</strong>${total ? '' : '<button class="btn btn-small" data-inv="trocar-tipo">Trocar tipo</button>'}</div>`;
+    h += uc
+      ? `<div class="inv-checkup ${uc.divergencias ? 'ruim' : 'bom'}">${uc.divergencias ? `⚠️ Último check-up: ${uc.divergencias} divergência(s)` : '✅ Último check-up: tudo confere'}
+          <div class="peq">${dataHora(uc.ts)} · ${escHtml(uc.qraNome)}</div></div>`
+      : '<div class="inv-checkup">Nenhum check-up feito ainda.</div>';
+    Object.entries(tipo.categorias).forEach(([cat, nomeCat]) => {
+      const lista = this.invLista(r.itens, cat);
+      h += `<div class="inv-cat"><div class="inv-cat-titulo">${escHtml(nomeCat)} <span>${lista.length} objeto(s)</span></div>`;
+      h += lista.map(([k, it]) => `<div class="inv-item">
+          <span class="nome">${escHtml(it.nome)}</span>
+          <div class="qtd"><button data-inv="menos" data-cat="${cat}" data-k="${k}" aria-label="Menos">−</button><b>${it.qtd}</b><button data-inv="mais" data-cat="${cat}" data-k="${k}" aria-label="Mais">+</button></div>
+          <button class="lixo" data-inv="remover" data-cat="${cat}" data-k="${k}" aria-label="Remover">🗑️</button>
+        </div>`).join('') || '<div class="posto-sub">Nenhum objeto.</div>';
+      h += this.invAdd === cat ? this.formAdd(cat) : `<button class="btn btn-small inv-add" data-inv="abrir-add" data-cat="${cat}">＋ Adicionar objeto</button>`;
+      h += '</div>';
+    });
+    h += mud
+      ? `<div class="inv-rodape"><button class="btn" data-inv="desfazer">Desfazer</button><button class="btn btn-primary" data-inv="salvar">💾 Salvar alterações (${mud})</button></div>`
+      : `<button class="btn btn-primary inv-grande" data-inv="checkup"${total ? '' : ' disabled'}>✅ Fazer check-up geral</button>`;
+    el.innerHTML = h;
+  }
+
+  formAdd(cat) {
+    const lista = this.invRascunho.itens[cat] || {};
+    const opcoes = INV_OBJETOS.filter(o => !lista[invChave(o)]).map(o => `<option>${escHtml(o)}</option>`).join('');
+    return `<div class="inv-form">
+      <select id="inv-add-obj" class="form-input"><option value="">— escolha o objeto —</option>${opcoes}<option value="__outro">Outro (digitar)…</option></select>
+      <input id="inv-add-outro" class="form-input hidden" maxlength="40" placeholder="Nome do objeto">
+      <div class="linha" style="justify-content:space-between">Quantidade
+        <div class="qtd"><button data-inv="add-menos" aria-label="Menos">−</button><b id="inv-add-qtd">${this.invAddQtd}</b><button data-inv="add-mais" aria-label="Mais">+</button></div></div>
+      <div class="inv-rodape"><button class="btn" data-inv="fechar-add">Cancelar</button><button class="btn btn-primary" data-inv="confirmar-add" data-cat="${cat}">Adicionar</button></div>
+    </div>`;
+  }
+
+  // Check-up geral: confere a lista salva no servidor, objeto por objeto
+  renderCheckup() {
+    const inv = this.inv;
+    const tipo = INV_TIPOS[inv.tipo];
+    let total = 0, feitos = 0, div = 0;
+    let h = `<div class="inv-topo"><strong>✅ Check-up geral</strong><button class="btn btn-small" data-inv="sair-checkup">✕ Cancelar</button></div>
+      <div class="posto-sub" style="margin-bottom:10px">Conte cada objeto. Toque em <b>Confere</b> se a quantidade bate, ou ajuste no − / + quanto você encontrou.</div>`;
+    Object.entries(tipo.categorias).forEach(([cat, nomeCat]) => {
+      const lista = this.invLista(inv.itens || {}, cat);
+      if (!lista.length) return;
+      h += `<div class="inv-cat"><div class="inv-cat-titulo">${escHtml(nomeCat)}</div>`;
+      h += lista.map(([k, it]) => {
+        const chave = `${cat}/${k}`;
+        const enc = this.invAchados[chave];
+        total++;
+        if (enc !== undefined) feitos++;
+        if (enc !== undefined && enc !== it.qtd) div++;
+        const st = enc === undefined ? '' : enc === it.qtd ? ' ok' : ' div';
+        return `<div class="inv-item${st}">
+          <span class="nome">${escHtml(it.nome)}<small>esperado ${it.qtd}${st === ' div' ? ` · encontrado ${enc}` : ''}</small></span>
+          <div class="qtd"><button data-inv="ck-menos" data-chave="${chave}" aria-label="Menos">−</button><b>${enc === undefined ? '?' : enc}</b><button data-inv="ck-mais" data-chave="${chave}" aria-label="Mais">+</button></div>
+          <button class="btn btn-small${st === ' ok' ? ' btn-primary' : ''}" data-inv="ck-ok" data-chave="${chave}">✔ Confere</button>
+        </div>`;
+      }).join('');
+      h += '</div>';
+    });
+    h += `<textarea id="inv-obs" class="form-input" rows="2" maxlength="500" placeholder="Observação (opcional): o que sumiu, quebrou…">${escHtml(this.invObs)}</textarea>
+      <button class="btn btn-primary inv-grande" data-inv="enviar-checkup"${feitos < total ? ' disabled' : ''}>Enviar check-up (${feitos}/${total})${div ? ` · ${div} divergência(s)` : ''}</button>`;
+    document.getElementById('inv').innerHTML = h;
+  }
+
+  esperado(chave) {
+    const [cat, k] = chave.split('/');
+    return ((this.inv.itens || {})[cat] || {})[k].qtd;
+  }
+
+  acaoInv(acao, d) {
+    const r = this.invRascunho;
+    const it = d.cat && d.k && r && (r.itens[d.cat] || {})[d.k];
+    switch (acao) {
+      case 'recarregar': return this.carregarInv();
+      case 'tipo': r.tipo = d.tipo; break;
+      case 'trocar-tipo': r.tipo = ''; break;
+      case 'menos': if (it) it.qtd = Math.max(1, it.qtd - 1); break;
+      case 'mais': if (it) it.qtd = Math.min(999, it.qtd + 1); break;
+      case 'remover':
+        delete r.itens[d.cat][d.k];
+        if (!Object.keys(r.itens[d.cat]).length) delete r.itens[d.cat];
+        break;
+      case 'abrir-add': this.invAdd = d.cat; this.invAddQtd = 1; break;
+      case 'fechar-add': this.invAdd = null; break;
+      case 'add-menos':
+      case 'add-mais':
+        this.invAddQtd = Math.min(999, Math.max(1, this.invAddQtd + (acao === 'add-mais' ? 1 : -1)));
+        document.getElementById('inv-add-qtd').textContent = this.invAddQtd;
+        return;
+      case 'confirmar-add': {
+        const sel = document.getElementById('inv-add-obj').value;
+        const nome = (sel === '__outro' ? document.getElementById('inv-add-outro').value : sel).trim().slice(0, 40);
+        const k = invChave(nome);
+        if (!nome || !k) return this.toast(sel === '__outro' ? 'Digite o nome do objeto.' : 'Escolha o objeto.', 'error');
+        const lista = r.itens[d.cat] = r.itens[d.cat] || {};
+        if (lista[k]) lista[k].qtd = Math.min(999, lista[k].qtd + this.invAddQtd);
+        else lista[k] = { nome, qtd: this.invAddQtd };
+        this.invAdd = null;
+        break;
+      }
+      case 'desfazer': return this.usarInv(this.inv);
+      case 'salvar': return this.salvarInv();
+      case 'checkup': this.invModo = 'checkup'; this.invAchados = {}; this.invObs = ''; break;
+      case 'sair-checkup': this.invModo = 'lista'; break;
+      case 'ck-ok': this.invAchados[d.chave] = this.esperado(d.chave); break;
+      case 'ck-menos':
+      case 'ck-mais': {
+        const atual = this.invAchados[d.chave] !== undefined ? this.invAchados[d.chave] : this.esperado(d.chave);
+        this.invAchados[d.chave] = Math.min(999, Math.max(0, atual + (acao === 'ck-mais' ? 1 : -1)));
+        break;
+      }
+      case 'enviar-checkup': return this.enviarCheckup();
+      default: return;
+    }
+    this.renderInv();
+  }
+
+  async salvarInv() {
+    this.ocupado(true, 'Salvando…');
+    try {
+      const r = await qapApi({
+        acao: 'inventario_salvar', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin,
+        tipo: this.invRascunho.tipo, itens: this.invRascunho.itens,
+      });
+      this.usarInv(r.inv || {});
+      this.toast('✅ Objetos salvos.', 'success');
+    } catch (err) {
+      if (!this.erroSessao(err)) this.toast(`❌ Não salvou: ${qapErroTexto(err)}`, 'error');
+    } finally {
+      this.ocupado(false);
+    }
+  }
+
+  async enviarCheckup() {
+    this.ocupado(true, 'Enviando check-up…');
+    try {
+      const r = await qapApi({
+        acao: 'checkup', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin,
+        encontrados: this.invAchados, obs: this.invObs.trim(),
+      });
+      const uc = r.ultimoCheckup;
+      this.inv.ultimoCheckup = uc;
+      this.invModo = 'lista';
+      this.invAchados = {};
+      this.invObs = '';
+      this.renderInv();
+      this.toast(uc.divergencias ? `⚠️ Check-up enviado com ${uc.divergencias} divergência(s). Aparece para a supervisão.` : '✅ Check-up enviado: tudo confere.', uc.divergencias ? 'error' : 'success');
+    } catch (err) {
+      if (this.erroSessao(err)) return;
+      this.toast(`❌ Check-up NÃO enviado: ${qapErroTexto(err)}`, 'error');
+      if (err.codigo === 'checkup') this.carregarInv();
+    } finally {
+      this.ocupado(false);
+    }
+  }
+
   // ----- Diversos -----
 
   ocupado(sim, texto) {
@@ -609,7 +848,7 @@ class QthApp {
     try {
       const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
       const { v } = await r.json();
-      if (!v || v === APP_VERSION || this.cap || this.enviandoFila) return;
+      if (!v || v === APP_VERSION || this.cap || this.enviandoFila || this.invOcupado()) return;
       if ((await Fila.todos()).length) return; // nunca recarregar com envio pendente
       recarregarParaVersao(v, ['qth.html', 'qth.js', 'style.css', 'config.js']);
     } catch (e) { /* sem internet */ }
@@ -622,6 +861,19 @@ class QthApp {
       const b = e.target.closest('[data-tipo]');
       if (b) this.abrirCaptura(b.dataset.tipo);
     });
+    document.getElementById('abas-qra').addEventListener('click', e => {
+      const b = e.target.closest('[data-aba]');
+      if (b) this.mostrarAba(b.dataset.aba);
+    });
+    const inv = document.getElementById('inv');
+    inv.addEventListener('click', e => {
+      const b = e.target.closest('[data-inv]');
+      if (b && !b.disabled) this.acaoInv(b.dataset.inv, b.dataset);
+    });
+    inv.addEventListener('change', e => {
+      if (e.target.id === 'inv-add-obj') document.getElementById('inv-add-outro').classList.toggle('hidden', e.target.value !== '__outro');
+    });
+    inv.addEventListener('input', e => { if (e.target.id === 'inv-obs') this.invObs = e.target.value; });
     document.getElementById('cap-fechar').addEventListener('click', () => this.fecharCaptura());
     document.getElementById('btn-foto').addEventListener('click', () => this.tirarFoto());
     document.getElementById('btn-video').addEventListener('click', () => this.gravarVideo());

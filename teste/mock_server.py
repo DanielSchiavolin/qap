@@ -3,7 +3,7 @@
 Teste local do App QAP, sem Firebase e sem Google Drive de verdade.
 
 Serve a pasta do app e imita:
-  /mock/api  -> o Code.gs (acoes posto, entrar, evento, midia)
+  /mock/api  -> o Code.gs (acoes posto, entrar, evento, midia, inventario, inventario_salvar, checkup)
   /mock/db   -> o Realtime Database (GET/PUT/PATCH/DELETE ?path=a/b)
 
 Uso:  python teste/mock_server.py [pasta_dos_dados]
@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -25,6 +26,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DADOS = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(RAIZ, 'teste', '_dados')
 PORTA = 8765
 TIPOS = {'qti', 'assumir', 'qap', 'ronda', 'pausa_ini', 'pausa_fim', 'passar', 'qru'}
+INV_CATEGORIAS = {'stand': ['decorado', 'salao', 'area_externa'], 'terreno': ['terreno', 'copa']}
 
 
 def sha(s):
@@ -198,6 +200,67 @@ def api(req):
             raise Erro('midia')
         with open(caminho, 'rb') as f, open(caminho + '.mime') as fm:
             return {'ok': True, 'mime': fm.read(), 'b64': base64.b64encode(f.read()).decode()}
+    if acao == 'inventario':
+        checar_posto(req.get('p'), req.get('k'))
+        checar_pin(req.get('qraId'), req.get('pin'))
+        return {'ok': True, 'inv': pegar(f'procedimentos/inventario/{req["p"]}') or {}}
+    if acao == 'inventario_salvar':
+        checar_posto(req.get('p'), req.get('k'))
+        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        tipo = req.get('tipo')
+        if tipo not in INV_CATEGORIAS:
+            raise Erro('inventario')
+        itens, n = {}, 0
+        for cat in INV_CATEGORIAS[tipo]:
+            for k, it in ((req.get('itens') or {}).get(cat) or {}).items():
+                qtd, nome = it.get('qtd'), str(it.get('nome') or '').strip()[:40]
+                if not re.fullmatch(r'[a-z0-9_]{1,40}', k) or not nome or not isinstance(qtd, int) or not 1 <= qtd <= 999:
+                    raise Erro('inventario')
+                n += 1
+                if n > 150:
+                    raise Erro('inventario')
+                itens.setdefault(cat, {})[k] = {'nome': nome, 'qtd': qtd}
+        atual = pegar(f'procedimentos/inventario/{req["p"]}') or {}
+        antes = atual.get('itens') or {}
+        mudancas = []
+        for cat in sorted(set(antes) | set(itens)):
+            a, d = antes.get(cat) or {}, itens.get(cat) or {}
+            for k in sorted(set(a) | set(d)):
+                de, para = (a.get(k) or {}).get('qtd', 0), (d.get(k) or {}).get('qtd', 0)
+                if de != para:
+                    mudancas.append({'cat': cat, 'nome': (d.get(k) or a.get(k))['nome'], 'de': de, 'para': para})
+        trocou = atual.get('tipo', '') != tipo
+        if not mudancas and not trocou:
+            return {'ok': True, 'inv': atual, 'mudancas': 0}
+        novo = {'tipo': tipo, 'itens': itens, 'alteradoEm': agora_ms(), 'alteradoPor': qra['nome']}
+        if atual.get('ultimoCheckup'):
+            novo['ultimoCheckup'] = atual['ultimoCheckup']
+        gravar(f'procedimentos/inventario/{req["p"]}', novo)
+        hist = {'acao': 'alteracao', 'ts': agora_ms(), 'qraId': qra['id'], 'qraNome': qra['nome'], 'mudancas': mudancas}
+        if trocou:
+            hist['tipo'] = {'de': atual.get('tipo', ''), 'para': tipo}
+        gravar(f'procedimentos/inventario_hist/{req["p"]}/h{uuid.uuid4().hex[:12]}', hist)
+        return {'ok': True, 'inv': novo, 'mudancas': len(mudancas)}
+    if acao == 'checkup':
+        checar_posto(req.get('p'), req.get('k'))
+        qra = checar_pin(req.get('qraId'), req.get('pin'))
+        inv = pegar(f'procedimentos/inventario/{req["p"]}') or {}
+        achados = req.get('encontrados') or {}
+        itens, div = [], 0
+        for cat, lista in (inv.get('itens') or {}).items():
+            for k, it in lista.items():
+                enc = achados.get(f'{cat}/{k}')
+                if not isinstance(enc, int) or not 0 <= enc <= 999:
+                    raise Erro('checkup')
+                div += enc != it['qtd']
+                itens.append({'cat': cat, 'nome': it['nome'], 'esperado': it['qtd'], 'encontrado': enc})
+        if not itens:
+            raise Erro('checkup')
+        resumo = {'ts': agora_ms(), 'qraId': qra['id'], 'qraNome': qra['nome'], 'total': len(itens), 'divergencias': div,
+                  'obs': str(req.get('obs') or '')[:500]}
+        gravar(f'procedimentos/inventario_hist/{req["p"]}/h{uuid.uuid4().hex[:12]}', dict(resumo, acao='checkup', itens=itens))
+        gravar(f'procedimentos/inventario/{req["p"]}/ultimoCheckup', resumo)
+        return {'ok': True, 'ultimoCheckup': resumo}
     raise Erro('acao')
 
 

@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.5';
+const APP_VERSION = '2026-10-31.6';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 
@@ -115,6 +115,9 @@ class PainelApp {
     this.sched = new Schedule();
     this.cfgs = {};
     this.pins = {};
+    this.invs = {};            // objetos de valor por posto
+    this.invHist = {};         // histórico do posto aberto
+    this.pararInvHist = null;
     this.eventosPorDia = {};
     this.escutasDia = {};
     this.carregado = { posts: false, qras: false, folgas: false, coberturas: false, config: false };
@@ -147,6 +150,7 @@ class PainelApp {
     ['posts', 'qras', 'folgas', 'coberturas'].forEach(c => this.banco.listen(c, d => { this.sched[c] = d; this.carregado[c] = true; this.agendarRender(); }, erro));
     this.banco.listen('procedimentos/config', d => { this.cfgs = d; this.carregado.config = true; this.agendarRender(); }, erro);
     this.banco.listen('procedimentos/pins', d => { this.pins = d; this.renderPins(); }, erro);
+    this.banco.listen('procedimentos/inventario', d => { this.invs = d; this.agendarRender(); if (this.postoAberto) this.renderInv(); }, erro);
     this.escutarDias();
     setInterval(() => { this.escutarDias(); this.agendarRender(); }, 30000);
     setInterval(() => this.relogio(), 1000);
@@ -244,6 +248,7 @@ class PainelApp {
         ${u ? `<div class="card-linha">Último QAP ${horaCurta(u.ts)} · ${escHtml(u.qraNome || '?')} (há ${Math.max(0, Math.round((agora - u.ts) / 60000))} min)</div>` : '<div class="card-linha fraca">Nenhum QAP hoje</div>'}
         ${escala ? `<div class="card-linha fraca">Escala: ${escHtml(escala)}</div>` : ''}
         ${e.horasFalha ? `<div class="card-linha" style="color:#ff8a7d">Falhas no turno: ${e.horasFalha} h</div>` : ''}
+        ${((this.invs[e.post.id] || {}).ultimoCheckup || {}).divergencias ? `<div class="card-linha" style="color:#ff8a7d">📦 Check-up com ${this.invs[e.post.id].ultimoCheckup.divergencias} divergência(s)</div>` : ''}
         ${!cfg.chave ? '<div class="card-linha fraca">🔗 Sem link ainda: toque para criar</div>' : ''}
       </button>`;
     };
@@ -309,7 +314,55 @@ class PainelApp {
     this.renderResumoPosto(this.estados().find(e => e.post.id === postId));
     document.querySelectorAll('#modal-posto [data-dia]').forEach(b => b.classList.toggle('active', b.dataset.dia === '0'));
     this.renderFeed();
+    this.invHist = {};
+    if (this.pararInvHist) this.pararInvHist();
+    this.pararInvHist = this.banco.listen(`procedimentos/inventario_hist/${postId}`, d => { this.invHist = d; this.renderInv(); });
+    const inv = this.invs[postId] || {};
+    document.getElementById('mp-inv-box').open = !!(inv.ultimoCheckup && inv.ultimoCheckup.divergencias);
+    this.renderInv();
     this.abrirModal('modal-posto');
+  }
+
+  // Objetos de valor do posto aberto: lista atual, último check-up e o que mudou (quem e quando)
+  renderInv() {
+    const id = this.postoAberto;
+    if (!id) return;
+    const inv = this.invs[id] || {};
+    const tipo = INV_TIPOS[inv.tipo];
+    const resumo = document.getElementById('mp-inv-resumo');
+    const el = document.getElementById('mp-inv');
+    if (!tipo) {
+      resumo.textContent = '· ainda não cadastrado';
+      el.innerHTML = '<div class="card-linha fraca" style="margin-top:8px">O QRA cadastra pela aba "Objetos de valor" na tela do posto.</div>';
+      return;
+    }
+    const uc = inv.ultimoCheckup;
+    const nObj = Object.values(inv.itens || {}).reduce((n, l) => n + Object.keys(l || {}).length, 0);
+    resumo.innerHTML = `· ${tipo.icone} ${tipo.nome} · ${nObj} objeto(s)${uc ? (uc.divergencias ? ` · <span style="color:#ff8a7d">⚠️ check-up com ${uc.divergencias} divergência(s)</span>` : ' · ✅ check-up ok') : ' · sem check-up'}`;
+    let h = uc
+      ? `<div class="card-linha" style="margin-top:8px"><strong>Último check-up:</strong> ${dataHora(uc.ts)} · ${escHtml(uc.qraNome)} · ${uc.divergencias ? `<span style="color:#ff8a7d">${uc.divergencias} de ${uc.total} com divergência</span>` : `tudo confere (${uc.total})`}${uc.obs ? `<br>“${escHtml(uc.obs)}”` : ''}</div>`
+      : '<div class="card-linha fraca" style="margin-top:8px">Nenhum check-up feito ainda.</div>';
+    h += Object.entries(tipo.categorias).map(([cat, nomeCat]) => {
+      const itens = Object.values((inv.itens || {})[cat] || {}).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+      return `<div class="inv-p-cat">${escHtml(nomeCat)}</div><div class="card-linha">${itens.map(i => `${escHtml(i.nome)} <b>×${i.qtd}</b>`).join(' · ') || '<span class="fraca">nenhum objeto</span>'}</div>`;
+    }).join('');
+    const hist = Object.values(this.invHist || {}).filter(x => x && x.ts).sort((a, b) => b.ts - a.ts).slice(0, 20);
+    if (hist.length) {
+      const cat = c => escHtml(invNomeCategoria(inv.tipo, c));
+      h += '<div class="inv-p-cat">Histórico</div>' + hist.map(x => {
+        const quem = `<span class="fraca">${dataHora(x.ts)} · ${escHtml(x.qraNome || '?')}</span>`;
+        if (x.acao === 'checkup') {
+          const divs = (x.itens || []).filter(i => i.encontrado !== i.esperado);
+          return `<div class="inv-hist">${quem}<br>${divs.length
+            ? `⚠️ Check-up: ${divs.map(i => `${escHtml(i.nome)} (${cat(i.cat)}) esperado ${i.esperado}, encontrado ${i.encontrado}`).join('; ')}`
+            : `✅ Check-up: tudo confere (${x.total})`}${x.obs ? ` · “${escHtml(x.obs)}”` : ''}</div>`;
+        }
+        const mud = (x.mudancas || []).map(m => `${escHtml(m.nome)} (${cat(m.cat)}) ${!m.de ? `adicionado ×${m.para}` : !m.para ? 'removido' : `${m.de} → ${m.para}`}`);
+        if (x.tipo) mud.unshift(`tipo do posto: ${escHtml((INV_TIPOS[x.tipo.para] || {}).nome || x.tipo.para)}`);
+        return `<div class="inv-hist">${quem}<br>✏️ ${mud.join('; ')}</div>`;
+      }).join('');
+    }
+    el.innerHTML = h;
   }
 
   renderResumoPosto(e) {
@@ -508,7 +561,11 @@ class PainelApp {
     if (!m) return;
     if (m.id === 'modal-confirma') { this.responderConfirma(false); return; }
     m.classList.remove('active');
-    if (m.id === 'modal-posto') { this.postoAberto = null; this.feedAssinatura = null; }
+    if (m.id === 'modal-posto') {
+      this.postoAberto = null;
+      this.feedAssinatura = null;
+      if (this.pararInvHist) { this.pararInvHist(); this.pararInvHist = null; }
+    }
     if (m.id === 'modal-pin') document.getElementById('pin-numero').textContent = '';
   }
 

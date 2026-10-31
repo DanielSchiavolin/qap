@@ -156,6 +156,10 @@ label.campo { display: block; font-size: 0.8rem; color: var(--muted); margin: 12
 .tag-pin.sem { background: rgba(231, 76, 60, 0.15); color: #ff8a7d; }
 .config-box { background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 10px; }
 .link-qth { font-size: 0.78rem; word-break: break-all; color: #7aa8ff; background: rgba(0, 0, 0, 0.3); padding: 8px; border-radius: 8px; margin: 8px 0; }
+#mp-inv-box summary { cursor: pointer; }
+.inv-p-cat { font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin: 10px 0 2px; }
+.inv-hist { font-size: 0.8rem; padding: 6px 0; border-top: 1px solid var(--line); }
+.fraca { color: var(--muted); }
 .pin-grande { font-size: 2.4rem; font-weight: 900; letter-spacing: 12px; color: var(--accent); text-align: center; margin: 10px 0; }
 
 /* ===== Tela do QRA (celular) ===== */
@@ -181,6 +185,38 @@ body.qth { user-select: none; -webkit-user-select: none; -webkit-touch-callout: 
 .teclado { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-width: 300px; margin: 0 auto; }
 .teclado button { font-size: 1.5rem; font-weight: 800; padding: 14px 0; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.08); color: #fff; }
 .pin-pontos { font-size: 2rem; letter-spacing: 14px; min-height: 2.6rem; color: var(--accent); }
+
+body.qth input, body.qth textarea { user-select: text; -webkit-user-select: text; }
+
+/* Abas da tela do QRA + objetos de valor */
+.abas-qra { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0 4px; }
+.aba { background: rgba(255, 255, 255, 0.06); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 10px 6px; font-weight: 800; font-size: 0.9rem; }
+.aba.active { background: var(--accent); color: var(--primary-dark); border-color: var(--accent); }
+#aba-inv { margin-top: 10px; }
+.inv-vazio { text-align: center; padding: 24px 0 14px; color: var(--muted); font-size: 0.95rem; }
+.inv-topo { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 1.1rem; margin-bottom: 8px; }
+.inv-checkup { background: var(--card-bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-weight: 700; font-size: 0.9rem; margin-bottom: 10px; }
+.inv-checkup.bom { border-color: rgba(46, 204, 113, 0.55); }
+.inv-checkup.ruim { border-color: rgba(231, 76, 60, 0.7); color: #ff8a7d; }
+.inv-checkup .peq { font-size: 0.78rem; color: var(--muted); font-weight: 500; margin-top: 2px; }
+.inv-cat { background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
+.inv-cat-titulo { font-size: 0.8rem; color: var(--accent); text-transform: uppercase; letter-spacing: 1.5px; font-weight: 800; }
+.inv-cat-titulo span { color: var(--muted); letter-spacing: 0; text-transform: none; font-weight: 500; }
+.inv-item { display: flex; align-items: center; gap: 8px; background: var(--card-bg); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; }
+.inv-item .nome { flex: 1; font-weight: 700; font-size: 0.92rem; min-width: 0; }
+.inv-item .nome small { display: block; font-weight: 500; font-size: 0.75rem; color: var(--muted); }
+.inv-item.ok { border-color: rgba(46, 204, 113, 0.7); }
+.inv-item.div { border-color: rgba(231, 76, 60, 0.8); background: rgba(231, 76, 60, 0.12); }
+.inv-item.div .nome small { color: #ff8a7d; }
+.qtd { display: flex; align-items: center; gap: 4px; }
+.qtd button { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.08); color: #fff; font-size: 1.2rem; font-weight: 800; }
+.qtd b { min-width: 30px; text-align: center; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.lixo { background: none; border: none; font-size: 1.1rem; padding: 6px; }
+.inv-add { align-self: flex-start; }
+.inv-form { display: flex; flex-direction: column; gap: 8px; background: rgba(245, 166, 35, 0.08); border: 1px solid rgba(245, 166, 35, 0.4); border-radius: 10px; padding: 10px; font-size: 0.9rem; }
+.inv-rodape { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+.inv-grande { width: 100%; padding: 16px; font-size: 1.05rem; margin-top: 4px; }
+#inv-obs { margin: 4px 0 8px; }
 
 /* Captura (tela cheia) */
 .captura { position: fixed; inset: 0; z-index: 2500; background: #000; display: flex; flex-direction: column; }

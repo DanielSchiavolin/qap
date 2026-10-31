@@ -28,6 +28,10 @@ const MAX_MIDIAS = 4;
 const PIN_TENTATIVAS = 5;
 const PIN_BLOQUEIO_S = 15 * 60;
 const ID_VALIDO = /^[A-Za-z0-9_\-]{1,80}$/;
+// Objetos de valor: tipo do posto -> categorias (iguais ao INV_TIPOS do config.js)
+const INV_CATEGORIAS = { stand: ['decorado', 'salao', 'area_externa'], terreno: ['terreno', 'copa'] };
+const INV_CHAVE = /^[a-z0-9_]{1,40}$/;
+const INV_MAX_ITENS = 150;
 
 function doGet() {
   return json_({ ok: true, agora: Date.now() });
@@ -42,6 +46,9 @@ function doPost(e) {
       case 'entrar': return json_(entrar_(req));
       case 'evento': return json_(evento_(req));
       case 'midia': return json_(midia_(req));
+      case 'inventario': return json_(inventario_(req));
+      case 'inventario_salvar': return json_(inventarioSalvar_(req));
+      case 'checkup': return json_(checkup_(req));
       default: return json_({ ok: false, erro: 'acao' });
     }
   } catch (err) {
@@ -125,6 +132,94 @@ function midia_(req) {
   if (arq.getDescription() !== MARCA_ARQUIVO || arq.isTrashed()) throw erro_('midia');
   const blob = arq.getBlob();
   return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
+}
+
+// ===== Objetos de valor do QTH (procedimentos/inventario/<posto> e inventario_hist/<posto>) =====
+
+function inventario_(req) {
+  checarPosto_(req.p, req.k);
+  checarPin_(req.qraId, req.pin);
+  return { ok: true, inv: db_(`procedimentos/inventario/${req.p}`) || {} };
+}
+
+// O QRA manda a lista inteira (tipo + objetos); o que mudou vai para o histórico com o nome dele
+function inventarioSalvar_(req) {
+  checarPosto_(req.p, req.k);
+  const qra = checarPin_(req.qraId, req.pin);
+  const tipo = String(req.tipo || '');
+  if (!INV_CATEGORIAS[tipo]) throw erro_('inventario');
+  const itens = limparItens_(tipo, req.itens);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const atual = db_(`procedimentos/inventario/${req.p}`) || {};
+    const mudancas = diferencas_(atual.itens || {}, itens);
+    const trocouTipo = (atual.tipo || '') !== tipo;
+    if (!mudancas.length && !trocouTipo) return { ok: true, inv: atual, mudancas: 0 };
+    const agora = Date.now();
+    const novo = { tipo, itens, alteradoEm: agora, alteradoPor: qra.nome };
+    if (atual.ultimoCheckup) novo.ultimoCheckup = atual.ultimoCheckup;
+    db_(`procedimentos/inventario/${req.p}`, 'put', novo);
+    const hist = { acao: 'alteracao', ts: agora, qraId: qra.id, qraNome: qra.nome, mudancas };
+    if (trocouTipo) hist.tipo = { de: atual.tipo || '', para: tipo };
+    db_(`procedimentos/inventario_hist/${req.p}`, 'post', hist);
+    return { ok: true, inv: novo, mudancas: mudancas.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Check-up geral: o QRA manda quanto encontrou de cada objeto; o esperado vem do banco
+function checkup_(req) {
+  checarPosto_(req.p, req.k);
+  const qra = checarPin_(req.qraId, req.pin);
+  const inv = db_(`procedimentos/inventario/${req.p}`) || {};
+  const achados = req.encontrados || {};
+  const itens = [];
+  let divergencias = 0;
+  Object.keys(inv.itens || {}).forEach(cat => Object.keys(inv.itens[cat] || {}).forEach(k => {
+    const it = inv.itens[cat][k];
+    const v = achados[`${cat}/${k}`];
+    const enc = Number(v);
+    if (v === undefined || v === null || v === '' || !(enc >= 0 && enc <= 999 && Math.floor(enc) === enc)) throw erro_('checkup');
+    if (enc !== it.qtd) divergencias++;
+    itens.push({ cat, nome: it.nome, esperado: it.qtd, encontrado: enc });
+  }));
+  if (!itens.length) throw erro_('checkup');
+  const resumo = { ts: Date.now(), qraId: qra.id, qraNome: qra.nome, total: itens.length, divergencias, obs: String(req.obs || '').slice(0, 500) };
+  db_(`procedimentos/inventario_hist/${req.p}`, 'post', Object.assign({ acao: 'checkup', itens }, resumo));
+  db_(`procedimentos/inventario/${req.p}/ultimoCheckup`, 'put', resumo);
+  return { ok: true, ultimoCheckup: resumo };
+}
+
+function limparItens_(tipo, itens) {
+  const out = {};
+  let n = 0;
+  INV_CATEGORIAS[tipo].forEach(cat => {
+    const lista = (itens && itens[cat]) || {};
+    Object.keys(lista).forEach(k => {
+      const it = lista[k] || {};
+      const qtd = Number(it.qtd);
+      const nome = String(it.nome || '').trim().slice(0, 40);
+      if (!INV_CHAVE.test(k) || !nome || !(qtd >= 1 && qtd <= 999 && Math.floor(qtd) === qtd)) throw erro_('inventario');
+      if (++n > INV_MAX_ITENS) throw erro_('inventario');
+      (out[cat] = out[cat] || {})[k] = { nome, qtd };
+    });
+  });
+  return out;
+}
+
+function diferencas_(antes, depois) {
+  const mudancas = [];
+  const cats = Object.keys(Object.assign({}, antes, depois));
+  cats.forEach(cat => {
+    const a = antes[cat] || {}, d = depois[cat] || {};
+    Object.keys(Object.assign({}, a, d)).forEach(k => {
+      const de = (a[k] && a[k].qtd) || 0, para = (d[k] && d[k].qtd) || 0;
+      if (de !== para) mudancas.push({ cat, nome: (d[k] || a[k]).nome, de, para });
+    });
+  });
+  return mudancas;
 }
 
 // ===== Conferências =====

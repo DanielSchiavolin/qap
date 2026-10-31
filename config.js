@@ -38,7 +38,32 @@ const QAP_ERROS = {
   interno: 'Erro no servidor. Tente de novo em instantes.',
   config: 'App sem backend configurado (config.js).',
   rede: 'Sem internet.',
+  inventario: 'Lista de objetos inválida. Confira as quantidades.',
+  checkup: 'A lista de objetos mudou enquanto você conferia. Abra o check-up de novo.',
+  acao: 'Função nova ainda não liberada no servidor. Avise a supervisão.',
 };
+
+// Objetos de valor do QTH. Tipo do posto -> categorias (as chaves são iguais às do Code.gs).
+const INV_TIPOS = {
+  stand: { nome: 'Stand', icone: '🏠', categorias: { decorado: 'Decorado', salao: 'Salão', area_externa: 'Área externa' } },
+  terreno: { nome: 'Terreno', icone: '🚧', categorias: { terreno: 'Terreno', copa: 'Copa' } },
+};
+// Lista pronta para escolher (o QRA também pode digitar outro)
+const INV_OBJETOS = [
+  'Mesa', 'Cadeira', 'Geladeira', 'Micro-ondas', 'Máquina de café', 'Monitor', 'Computador', 'Teclado', 'Mouse',
+  'Cadeira de escritório', 'Holofote', 'Luminária', 'Spot de luz', 'Tablet', 'Book do empreendimento', 'TV',
+  'Filtro de água', 'Biruta', 'Almofada', 'Carrinho de mão', 'Maçarico', 'Cadeado',
+];
+
+// "Máquina de café" -> "maquina_de_cafe" (chave do objeto no banco)
+function invChave(nome) {
+  return String(nome).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+}
+
+function invNomeCategoria(tipo, cat) {
+  return ((INV_TIPOS[tipo] || {}).categorias || {})[cat] || cat;
+}
 
 // Chamada ao backend. JSON como text/plain: o Apps Script não responde ao "preflight" de CORS.
 async function qapApi(body) {

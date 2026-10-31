@@ -62,14 +62,26 @@
         <div class="posto-nome" id="principal-posto"></div>
         <div class="posto-sub" id="principal-qra"></div>
 
-        <div id="status-qap" class="status-qap">
-            <div class="grande" id="status-grande">--</div>
-            <div class="peq" id="status-peq"></div>
+        <div class="abas-qra" id="abas-qra">
+            <button class="aba active" data-aba="qap">📸 QAP</button>
+            <button class="aba" data-aba="inv">📦 Objetos de valor</button>
         </div>
 
-        <div id="fila-aviso" class="fila-aviso hidden"></div>
+        <div id="aba-qap">
+            <div id="status-qap" class="status-qap">
+                <div class="grande" id="status-grande">--</div>
+                <div class="peq" id="status-peq"></div>
+            </div>
 
-        <div class="acoes" id="acoes"></div>
+            <div id="fila-aviso" class="fila-aviso hidden"></div>
+
+            <div class="acoes" id="acoes"></div>
+        </div>
+
+        <!-- objetos de valor do QTH: lista, adicionar/remover e check-up geral -->
+        <div id="aba-inv" class="hidden">
+            <div id="inv"></div>
+        </div>
 
         <div class="rodape-qra">
             <span id="versao"></span>
