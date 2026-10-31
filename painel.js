@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.8';
+const APP_VERSION = '2026-10-31.9';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 

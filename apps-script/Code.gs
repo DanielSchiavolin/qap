@@ -123,6 +123,7 @@ function evento_(req) {
   ['lat', 'lng', 'prec'].forEach(k => { const v = Number(req[k]); if (req[k] !== null && req[k] !== undefined && req[k] !== '' && isFinite(v)) ev[k] = v; });
   if (req.semLocal) ev.semLocal = String(req.semLocal).slice(0, 60);
   const r = db_(`procedimentos/eventos/${dia}/${req.p}`, 'post', ev);
+  CacheService.getScriptCache().remove(`ev_${dia}_${req.p}`);
   return { ok: true, id: r && r.name, ts: capturadoEm, dia };
 }
 
@@ -169,18 +170,19 @@ function responder_(req) {
   return { ok: true };
 }
 
-// Tela do QRA: respostas aos informes dele de hoje e de ontem. Chamada a cada minuto pelos
-// celulares abertos, por isso tudo vem do cache (o responder_ limpa o cache quando muda algo).
+// Tela do QRA, aba "Meu turno": os informes dele no turno (até o QTA) com as respostas da
+// supervisão. Chamada a cada minuto pelos celulares abertos, por isso tudo vem do cache
+// (evento_ e responder_ limpam o cache quando muda algo).
 function mensagens_(req) {
   checarQraLeve_(req);
-  return { ok: true, agora: Date.now(), itens: respostasDoQra_(req.p, req.qraId) };
+  return { ok: true, agora: Date.now(), informes: informesDoTurno_(req.p, req.qraId) };
 }
 
-// Áudio de resposta: só se a resposta for para este QRA
+// Áudio de resposta: só se a resposta for para este QRA, num informe do turno dele
 function midiaResp_(req) {
   checarQraLeve_(req);
   const id = String(req.id || '');
-  const dele = respostasDoQra_(req.p, req.qraId).some(i => i.msgs.some(m => m.midia && m.midia.id === id));
+  const dele = informesDoTurno_(req.p, req.qraId).some(i => i.msgs.some(m => m.midia && m.midia.id === id));
   if (!dele) throw erro_('midia');
   const blob = DriveApp.getFileById(id).getBlob();
   return { ok: true, mime: blob.getContentType(), b64: Utilities.base64Encode(blob.getBytes()) };
@@ -196,20 +198,31 @@ function checarQraLeve_(req) {
   if (!pin || !/^\d{4}$/.test(String(req.pin || '')) || sha256_(`${req.qraId}:${req.pin}`) !== pin) checarPin_(req.qraId, req.pin);
 }
 
-function respostasDoQra_(p, qraId) {
+// Informes do QRA neste posto nas últimas 24 h, só depois do último "passar" (QTA) dele.
+// Volta do mais novo para o mais antigo, sem a mídia (só o tipo e a duração).
+function informesDoTurno_(p, qraId) {
   const hoje = diaOperacional_(new Date());
-  const itens = [];
+  const limite = Date.now() - 24 * 3600000;
+  let lista = [];
   [ontem_(hoje), hoje].forEach(dia => {
-    const tudo = doCache_(`resp_${dia}_${p}`, 600, () => db_(`procedimentos/respostas/${dia}/${p}`)) || {};
-    Object.keys(tudo).forEach(ev => {
-      const r = tudo[ev];
-      if (!r || r.qraId !== qraId) return;
-      const msgs = Object.keys(r.msgs || {}).map(k => r.msgs[k]).sort((a, b) => a.ts - b.ts);
-      if (!msgs.length && !r.curtida) return;
-      itens.push({ dia, ev, evTipo: r.evTipo, evTs: r.evTs, curtida: r.curtida || null, msgs });
+    const evs = doCache_(`ev_${dia}_${p}`, 600, () => db_(`procedimentos/eventos/${dia}/${p}`)) || {};
+    const resp = doCache_(`resp_${dia}_${p}`, 600, () => db_(`procedimentos/respostas/${dia}/${p}`)) || {};
+    Object.keys(evs).forEach(id => {
+      const ev = evs[id];
+      if (!ev || ev.qraId !== qraId || ev.ts < limite) return;
+      const r = resp[id] || {};
+      lista.push({
+        id, dia, tipo: ev.tipo, ts: ev.ts, texto: ev.texto || '',
+        midia: (ev.midia || []).map(m => ({ tipo: m.tipo, seg: m.seg || 0 })),
+        curtida: r.curtida || null,
+        msgs: Object.keys(r.msgs || {}).map(k => r.msgs[k]).sort((a, b) => a.ts - b.ts),
+      });
     });
   });
-  return itens.sort((a, b) => b.evTs - a.evTs);
+  lista.sort((a, b) => a.ts - b.ts);
+  const qta = lista.map(i => i.tipo).lastIndexOf('passar');
+  if (qta >= 0) lista = lista.slice(qta + 1);
+  return lista.reverse();
 }
 
 function doCache_(chave, segundos, ler) {

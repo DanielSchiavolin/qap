@@ -8,7 +8,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.8';
+const APP_VERSION = '2026-10-31.9';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -25,12 +25,12 @@ const ACOES = [
   { tipo: 'ronda', imagem: 'opcional', nome: 'Ronda' },
   { tipo: 'pausa_ini', imagem: 'nenhuma', nome: 'Saída 3/6' },
   { tipo: 'pausa_fim', imagem: 'nenhuma', nome: 'Volta do 3/6' },
-  { tipo: 'passar', imagem: 'opcional', nome: 'Passar posto' },
+  { tipo: 'passar', imagem: 'opcional', nome: 'Passar posto (QTA)' },
   { tipo: 'qru', imagem: 'opcional', nome: 'Ocorrência' },
   { tipo: 'qti', imagem: 'nenhuma', nome: 'QTI (a caminho)' },
 ];
 const ICONES = { qap: '📸', assumir: '✅', ronda: '🔦', pausa_ini: '🍽️', pausa_fim: '↩️', passar: '🔄', qru: '🚨', qti: '📻' };
-const NOME_INFORME = { qap: 'QAP', assumir: 'Assumir posto', ronda: 'Ronda', pausa_ini: 'Saída 3/6', pausa_fim: 'Volta do 3/6', passar: 'Passar posto', qru: 'Ocorrência', qti: 'QTI' };
+const NOME_INFORME = { qap: 'QAP', assumir: 'Assumir posto', ronda: 'Ronda', pausa_ini: 'Saída 3/6', pausa_fim: 'Volta do 3/6', passar: 'Passar posto (QTA)', qru: 'Ocorrência', qti: 'QTI' };
 const QUE_CONTA =ev => ev && (ev.temImagem || ev.tipo === 'pausa_fim');
 
 // ===== Fila de envios (IndexedDB): sem internet, o envio fica guardado e sai sozinho depois =====
@@ -143,7 +143,7 @@ class QthApp {
     this.invAchados = {};     // check-up: "<categoria>/<objeto>" -> quantidade encontrada
     this.invObs = '';
     this.aba = 'qap';
-    this.msgs = null;         // respostas da supervisão (null = ainda não buscou)
+    this.msgs = null;         // informes do turno + respostas da supervisão (null = ainda não buscou)
   }
 
   agora() { return Date.now() + this.offset; }
@@ -504,6 +504,7 @@ class QthApp {
     if (this.enviandoFila || !this.posto) return;
     this.enviandoFila = true;
     let itens = [];
+    let enviou = false;
     try { itens = await Fila.todos(); } catch (e) { itens = []; }
     if (mostrar && itens.length) this.ocupado(true, 'Enviando…');
     try {
@@ -511,6 +512,7 @@ class QthApp {
         try {
           const r = await qapApi(item.body);
           await Fila.remover(item.id);
+          enviou = true;
           if (QUE_CONTA(item) && (!this.ultimo || r.ts > this.ultimo.ts)) this.ultimo = { ts: r.ts, qraNome: this.sessao ? this.sessao.qraNome : '', temImagem: true };
           const nome = (ACOES.find(a => a.tipo === item.tipo) || {}).nome || 'Envio';
           this.toast(`✅ ${nome} enviado às ${horaCurta(r.ts)}`, 'success');
@@ -531,6 +533,8 @@ class QthApp {
       this.ocupado(false);
       this.atualizarFila();
       this.tique();
+      if (enviou) this.buscarMensagens();
+      else if (this.aba === 'msg') this.renderMensagens();
     }
   }
 
@@ -573,7 +577,7 @@ class QthApp {
       const r = await qapApi({ acao: 'mensagens', p: POSTO, k: CHAVE, qraId: this.sessao.qraId, pin: this.sessao.pin });
       const antes = Math.max(0, ...this.momentos(this.msgs));
       const primeira = this.msgs === null;
-      this.msgs = r.itens || [];
+      this.msgs = r.informes || [];
       const novas = this.momentos(this.msgs).filter(t => t > antes).length;
       if (!primeira && novas && this.aba !== 'msg') this.avisarMensagem();
       if (this.aba === 'msg') { this.renderMensagens(); this.marcarVistas(); }
@@ -586,7 +590,7 @@ class QthApp {
   }
 
   avisarMensagem() {
-    this.toast('💬 A supervisão respondeu seu informe. Veja em Mensagens.', 'success');
+    this.toast('💬 A supervisão respondeu seu informe. Veja em Meu turno.', 'success');
     try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
     try {
       const ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -612,16 +616,30 @@ class QthApp {
     b.classList.toggle('hidden', !n);
   }
 
-  renderMensagens() {
+  // Aba "Meu turno": tudo o que este QRA enviou desde o último QTA (Passar posto), do mais novo
+  // para o mais antigo, com o que ainda está na fila e as respostas da supervisão.
+  // Só redesenha quando muda (não corta um áudio tocando).
+  async renderMensagens() {
     const el = document.getElementById('msgs');
+    let fila = [];
+    try { fila = await Fila.todos(); } catch (e) { fila = []; }
+    const assinatura = JSON.stringify([this.msgs, fila.map(f => f.id)]);
+    if (assinatura === this.msgsAssinatura && el.innerHTML) return;
+    this.msgsAssinatura = assinatura;
     if (this.msgs === null) { el.innerHTML = '<div class="inv-vazio">Carregando…</div>'; return; }
-    if (!this.msgs.length) {
-      el.innerHTML = '<div class="inv-vazio">Nenhuma resposta da supervisão hoje.<br>Quando ela curtir ou responder um informe seu, aparece aqui.</div>';
+    const pendentes = fila.map(f => `<div class="msg-item pendente">
+        <div class="msg-topo">${ICONES[f.tipo] || '•'} ${escHtml(NOME_INFORME[f.tipo] || f.tipo)} · ${horaCurta(f.body.capturadoEm || f.criadoEm)}</div>
+        <div class="msg-linha">⏳ Aguardando internet para enviar</div></div>`).join('');
+    if (!this.msgs.length && !pendentes) {
+      el.innerHTML = '<div class="inv-vazio">Nenhum informe neste turno ainda.<br>Tudo o que você enviar aparece aqui, com as respostas da supervisão. A lista zera quando você der o QTA (Passar posto).</div>';
       return;
     }
-    el.innerHTML = this.msgs.map(i => {
+    el.innerHTML = `<div class="posto-sub" style="margin-bottom:8px">Seus informes neste turno (somem quando você der o QTA).</div>` + pendentes + this.msgs.map(i => {
+      const midias = (i.midia || []).map(m => m.tipo === 'foto' ? '📸 foto' : m.tipo === 'video' ? `🎥 vídeo ${Math.round(m.seg)} s` : `🎙️ áudio ${Math.round(m.seg)} s`).join(' · ');
       return `<div class="msg-item">
-        <div class="msg-topo">${ICONES[i.evTipo] || '•'} ${escHtml(NOME_INFORME[i.evTipo] || i.evTipo)} das ${horaCurta(i.evTs)}</div>
+        <div class="msg-topo">${ICONES[i.tipo] || '•'} ${escHtml(NOME_INFORME[i.tipo] || i.tipo)} · ${horaCurta(i.ts)} <span class="msg-ok">✅ enviado</span></div>
+        ${i.texto ? `<div class="msg-texto">“${escHtml(i.texto)}”</div>` : ''}
+        ${midias ? `<div class="msg-midia">${midias}</div>` : ''}
         ${i.curtida ? `<div class="msg-linha">👍 A supervisão curtiu <span>${horaCurta(i.curtida.ts)}</span></div>` : ''}
         ${i.msgs.map(m => `<div class="msg-linha">🗣️ ${m.tipo === 'texto'
           ? escHtml(m.texto)

@@ -201,6 +201,10 @@ body.qth input, body.qth textarea { user-select: text; -webkit-user-select: text
 .msg-linha { font-size: 0.92rem; padding: 4px 0; border-top: 1px solid var(--line); }
 .msg-linha > span:last-child { color: var(--muted); font-size: 0.75rem; margin-left: 4px; }
 .msg-linha audio { width: 100%; margin-top: 4px; }
+.msg-ok { float: right; font-size: 0.72rem; color: var(--success); font-weight: 700; }
+.msg-texto { font-size: 0.88rem; color: rgba(255, 255, 255, 0.85); margin: 2px 0 4px; white-space: pre-wrap; }
+.msg-midia { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
+.msg-item.pendente { border-color: var(--warning); }
 .aba { background: rgba(255, 255, 255, 0.06); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 10px 6px; font-weight: 800; font-size: 0.9rem; }
 .aba.active { background: var(--accent); color: var(--primary-dark); border-color: var(--accent); }
 #aba-inv { margin-top: 10px; }

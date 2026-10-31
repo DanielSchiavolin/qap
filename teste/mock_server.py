@@ -238,15 +238,25 @@ def api(req):
     if acao in ('mensagens', 'midia_resp'):
         checar_posto(req.get('p'), req.get('k'))
         checar_pin(req.get('qraId'), req.get('pin'))
+        # informes do QRA nas últimas 24 h, só depois do último "passar" (QTA), com as respostas
         itens = []
-        for dia, postos in (pegar('procedimentos/respostas') or {}).items():
-            for ev, r in (postos.get(req['p']) or {}).items():
-                msgs = sorted((r.get('msgs') or {}).values(), key=lambda m: m['ts'])
-                if r.get('qraId') == req['qraId'] and (msgs or r.get('curtida')):
-                    itens.append({'dia': dia, 'ev': ev, 'evTipo': r.get('evTipo'), 'evTs': r.get('evTs'), 'curtida': r.get('curtida'), 'msgs': msgs})
-        itens.sort(key=lambda i: -i['evTs'])
+        limite = agora_ms() - 24 * 3600 * 1000
+        for dia, postos in (pegar('procedimentos/eventos') or {}).items():
+            resp = (pegar(f'procedimentos/respostas/{dia}/{req["p"]}') or {})
+            for eid, ev in (postos.get(req['p']) or {}).items():
+                if ev.get('qraId') != req['qraId'] or ev['ts'] < limite:
+                    continue
+                r = resp.get(eid) or {}
+                itens.append({'id': eid, 'dia': dia, 'tipo': ev['tipo'], 'ts': ev['ts'], 'texto': ev.get('texto', ''),
+                              'midia': [{'tipo': m['tipo'], 'seg': m.get('seg', 0)} for m in ev.get('midia') or []],
+                              'curtida': r.get('curtida'), 'msgs': sorted((r.get('msgs') or {}).values(), key=lambda m: m['ts'])})
+        itens.sort(key=lambda i: i['ts'])
+        tipos = [i['tipo'] for i in itens]
+        if 'passar' in tipos:
+            itens = itens[len(tipos) - tipos[::-1].index('passar'):]
+        itens.reverse()
         if acao == 'mensagens':
-            return {'ok': True, 'agora': agora_ms(), 'itens': itens}
+            return {'ok': True, 'agora': agora_ms(), 'informes': itens}
         fid = req.get('id') or ''
         if not any((m.get('midia') or {}).get('id') == fid for i in itens for m in i['msgs']):
             raise Erro('midia')
