@@ -21,8 +21,10 @@ function montar(salvo) {
     signOut() { estado.saiu++; estado.user = null; return Promise.resolve().then(() => estado.ouvinte(null)); },
     signInWithEmailAndPassword(email, senha) {
       if (senha !== 'certa') return Promise.reject({ code: 'auth/wrong-password' });
+      // igual ao Firebase: se já era a mesma conta, onAuthStateChanged NÃO dispara de novo
+      const mesma = estado.user && estado.user.email === email;
       estado.user = { email };
-      return Promise.resolve().then(() => estado.ouvinte(estado.user));
+      return Promise.resolve().then(() => { if (!mesma) estado.ouvinte(estado.user); return { user: estado.user }; });
     },
   };
   const firebase = { apps: [], initializeApp() { firebase.apps.push(1); }, auth: Object.assign(() => auth, { Auth: { Persistence: { NONE: 'NONE' } } }) };

@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-11-20.2';
+const APP_VERSION = '2026-11-20.3';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 // Registro de segurança (procedimentos/seguranca/<dia>): nome de cada tipo e quais tocam alarme

@@ -45,6 +45,7 @@
   let overlay = null;
   let entrando = false; // a senha acabou de ser digitada nesta tela
   let voltarUrl = '';
+  let aoEntrar = null;  // chamado quando a senha digitada é aceita
 
   function buildOverlay() {
     if (overlay) return overlay;
@@ -86,8 +87,10 @@
       btn.textContent = 'Entrando...';
       try {
         entrando = true;
-        await firebase.auth().signInWithEmailAndPassword(TEAM_EMAIL, pwd.value);
+        const cred = await firebase.auth().signInWithEmailAndPassword(TEAM_EMAIL, pwd.value);
         pwd.value = '';
+        // com login salvo da mesma conta o Firebase não dispara onAuthStateChanged: libera aqui
+        if (aoEntrar) aoEntrar(cred && cred.user);
       } catch (ex) {
         entrando = false;
         err.textContent = ERRORS[ex && ex.code] || `Não foi possível entrar (${(ex && ex.code) || 'erro'}).`;
@@ -123,12 +126,16 @@
         : Promise.resolve();
       return new Promise((resolve) => {
         let started = false;
+        const liberar = (user) => {
+          hide();
+          if (!started) { started = true; resolve(user); }
+        };
+        aoEntrar = (user) => { if (user && user.email === TEAM_EMAIL) liberar(user); };
         pronto.then(() => auth.onAuthStateChanged((user) => {
           const daEquipe = user && user.email === TEAM_EMAIL;
           // "sempre": login que já estava salvo não vale, só a senha digitada agora
           if (daEquipe && (!sempre || entrando || started)) {
-            hide();
-            if (!started) { started = true; resolve(user); }
+            liberar(user);
           } else if (started) {
             // Signed out while the app was open: restart cleanly at the password screen
             location.reload();
