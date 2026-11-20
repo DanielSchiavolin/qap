@@ -8,7 +8,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.10';
+const APP_VERSION = '2026-11-20.1';
 const MAX_SEG = 15;
 const FOTO_MAX_PX = 1280;
 const VIDEO_LADO = 640; // vídeo sai em 640x480 (ou 480x640 em pé)
@@ -513,11 +513,15 @@ class QthApp {
     let itens = [];
     let enviou = false;
     try { itens = await Fila.todos(); } catch (e) { itens = []; }
+    // QTA por último: o que o QRA capturou antes sai com a sessão dele, antes de ela acabar
+    itens = itens.filter(i => i.tipo !== 'passar').concat(itens.filter(i => i.tipo === 'passar'));
     if (mostrar && itens.length) this.ocupado(true, 'Enviando…');
     try {
       for (const item of itens) {
         if (!this.sessao) break;
-        if (item.qraId && item.qraId !== this.sessao.qraId) continue; // de outro QRA: sai quando ele entrar
+        // de outro QRA: sai quando ele entrar. Fila da versão antiga não tinha item.qraId (só body.qraId).
+        const dono = item.qraId || (item.body && item.body.qraId) || '';
+        if (dono && dono !== this.sessao.qraId) continue;
         try {
           const r = await qapApi(Object.assign({}, item.body, { sessao: this.sessao.sessao }));
           await Fila.remover(item.id);

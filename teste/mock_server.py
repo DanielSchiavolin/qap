@@ -159,18 +159,25 @@ def porta(req):
     return {'disp': a.get('disp'), 'versao': a.get('v')}
 
 
+def marca_pin(pin_hash):
+    return assinar(f'pin.{pin_hash}')[:16]
+
+
 def criar_sessao(qra_id, p, pin_hash):
-    base = f'{qra_id}.{p}.{agora_ms()}.{pin_hash[:10]}'
+    base = f'{qra_id}.{p}.{agora_ms()}.{marca_pin(pin_hash)}'
     return f'{base}.{assinar(base)}'
 
 
-def checar_sessao(req):
+# Igual ao checarSessao_ do Code.gs: capturado_em antes do QTA ainda entra com a sessão antiga
+def checar_sessao(req, capturado_em=None):
     partes = str(req.get('sessao') or '').split('.')
     if len(partes) != 5 or assinar('.'.join(partes[:4])) != partes[4] or partes[1] != req.get('p'):
         raise Erro('sessao')
-    qra_id, _, criada, pin8, _ = partes
+    qra_id, _, criada, marca, _ = partes
     pin = pegar(f'procedimentos/pins/{qra_id}') or ''
-    if pin[:10] != pin8 or int(pegar(f'procedimentos/qta/{qra_id}') or 0) > int(criada):
+    qta = int(pegar(f'procedimentos/qta/{qra_id}') or 0)
+    antes_do_qta = bool(capturado_em) and int(criada) <= capturado_em <= qta
+    if not pin or marca_pin(pin) != marca or (qta > int(criada) and not antes_do_qta):
         raise Erro('sessao')
     return {'id': qra_id, 'nome': pegar(f'qras/{qra_id}')['name']}
 
@@ -239,7 +246,6 @@ def api(req):
         return {'ok': True, 'agora': agora_ms(), 'qra': {'id': qra['id'], 'nome': qra['nome']}, 'sessao': criar_sessao(qra['id'], req['p'], qra['pinHash'])}
     if acao == 'evento':
         checar_posto(req.get('p'), req.get('k'))
-        qra = checar_sessao(req)
         if req.get('tipo') not in TIPOS:
             raise Erro('tipo')
         midias = req.get('midias') or []
@@ -249,6 +255,7 @@ def api(req):
         cap = req.get('capturadoEm') or agora
         if cap > agora + 120000 or cap < agora - 12 * 3600000:
             cap = agora
+        qra = checar_sessao(req, cap)
         dia = dia_operacional(cap)
         salvas = []
         for m in midias:

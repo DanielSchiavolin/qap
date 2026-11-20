@@ -44,6 +44,8 @@ function montar() {
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8'), ctx);
+  // relógio do servidor adiantável pelo teste (ctx.__desvio em ms)
+  vm.runInContext('(() => { const r = Date.now; Date.now = () => r() + (globalThis.__desvio || 0); })()', ctx);
   // Firebase e Drive de mentira
   ctx.db_ = (c, metodo, corpo) => {
     if (!metodo || metodo === 'get') return pegar(c) === undefined ? null : JSON.parse(JSON.stringify(pegar(c)));
@@ -78,6 +80,8 @@ let r = t.chamar(Object.assign({ acao: 'entrar', qraId: 'teste_joao', pin: '1234
 caso('entrar devolve sessão e não precisa do app com Exigir app desligado', r.ok && /^teste_joao\.teste_24h\./.test(r.sessao));
 const sessao = r.sessao;
 caso('PIN não vai na resposta', !JSON.stringify(r).includes('1234'));
+caso('sessão não leva pedaço do hash do PIN (daria para achar o PIN)', !sessao.includes(t.banco.procedimentos.pins.teste_joao.slice(0, 8)));
+const criada = Number(sessao.split('.')[2]);
 
 r = t.chamar(Object.assign({ acao: 'mensagens', sessao }, base));
 caso('sessão vale para as outras ações', r.ok && Array.isArray(r.informes));
@@ -109,12 +113,28 @@ r = t.chamar(t.assinar(Object.assign({ acao: 'evento', sessao, tipo: 'passar', t
 caso('QTA (passar) enviado', r.ok);
 r = t.chamar(t.assinar(Object.assign({ acao: 'mensagens', sessao }, base)));
 caso('depois do QTA a sessão antiga não vale mais', r.erro === 'sessao');
+r = t.chamar(t.assinar(Object.assign({ acao: 'evento', sessao, tipo: 'ronda', capturadoEm: criada + 1 }, base)));
+caso('ronda capturada antes do QTA (fila offline) ainda entra com a sessão antiga', r.ok);
+r = t.chamar(t.assinar(Object.assign({ acao: 'evento', sessao, tipo: 'ronda', capturadoEm: Date.now() + 1000 }, base)));
+caso('envio capturado depois do QTA é recusado', r.erro === 'sessao');
 
 // PIN errado: bloqueio do QRA e do posto
 for (let i = 0; i < 5; i++) t.chamar(t.assinar(Object.assign({ acao: 'entrar', qraId: 'teste_joao', pin: '0000' }, base)));
 r = t.chamar(t.assinar(Object.assign({ acao: 'entrar', qraId: 'teste_joao', pin: '1234' }, base)));
 caso('5 PINs errados bloqueiam o QRA (nem o certo entra)', r.erro === 'bloqueado');
 caso('bloqueio de PIN vai para o registro', JSON.stringify(t.banco.procedimentos.seguranca).includes('pin_bloqueado'));
+
+// 20 PINs errados num aparelho (espalhados em vários QRAs) travam só esse aparelho no posto
+for (let i = 1; i <= 6; i++) {
+  t.banco.qras[`q${i}`] = { name: `QRA ${i}` };
+  t.banco.procedimentos.pins[`q${i}`] = crypto.createHash('sha256').update(`q${i}:4321`).digest('hex');
+}
+for (let i = 0; i < 20; i++) t.chamar(t.assinar(Object.assign({ acao: 'entrar', qraId: `q${(i % 5) + 1}`, pin: '0000' }, base), { disp: 'atacante_0001' }));
+r = t.chamar(t.assinar(Object.assign({ acao: 'entrar', qraId: 'q6', pin: '4321' }, base), { disp: 'atacante_0001' }));
+caso('20 PINs errados no mesmo aparelho travam esse aparelho', r.erro === 'bloqueado');
+caso('trava do aparelho vai para o registro', JSON.stringify(t.banco.procedimentos.seguranca).includes('posto_bloqueado'));
+r = t.chamar(t.assinar(Object.assign({ acao: 'entrar', qraId: 'q6', pin: '4321' }, base), { disp: 'honesto_00001' }));
+caso('outro celular do posto continua entrando com o PIN certo', r.ok);
 
 // alerta de print vindo do app
 r = t.chamar(t.assinar(Object.assign({ acao: 'alerta_seguranca', tipo: 'print', tela: 'qap' }, base)));
@@ -129,9 +149,16 @@ caso('Pausar tudo recusa a tela do QRA', r.erro === 'pausado');
 // limite de pedidos
 t.banco.procedimentos.sistema.pausado = false;
 t.cache.delete('sistema');
+// começa 1 s depois do início de uma janela de 10 min (o teste não cai na virada)
+const agoraReal = Date.now();
+t.ctx.__desvio = Math.ceil(agoraReal / 600000) * 600000 + 1000 - agoraReal;
 let ultimo;
 for (let i = 0; i < 310; i++) ultimo = t.chamar(t.assinar(Object.assign({ acao: 'mensagens', sessao: 'x' }, base)));
 caso('passou de 300 pedidos em 10 min no posto: limite', ultimo.erro === 'limite');
+t.ctx.__desvio += 600000;
+r = t.chamar(t.assinar(Object.assign({ acao: 'mensagens', sessao: 'x' }, base)));
+caso('na janela seguinte o posto volta a funcionar (mesmo sem parar de pedir)', r.erro !== 'limite');
+t.ctx.__desvio = 0;
 
 // pedido gigante e lixo
 r = t.ctx.doPost({ postData: { contents: '{}', length: 50 * 1024 * 1024 } });

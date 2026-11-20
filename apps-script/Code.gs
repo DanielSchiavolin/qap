@@ -125,12 +125,13 @@ function checarApp_(req, sis) {
   return { disp, versao: Number(a.v) || 0 };
 }
 
-// Conta pedidos numa janela; passou do máximo = recusa (e registra uma vez)
+// Conta pedidos numa janela fixa (00:00-00:10, 00:10-00:20...); passou do máximo = recusa (e registra
+// uma vez). A janela vai no nome da chave: o contador zera sozinho mesmo com pedidos sem parar.
 function limite_(chave, max, janelaS) {
   const cache = CacheService.getScriptCache();
-  const k = `lim_${chave}`;
+  const k = `lim_${chave}_${Math.floor(Date.now() / (janelaS * 1000))}`;
   const n = Number(cache.get(k) || 0) + 1;
-  cache.put(k, String(n), janelaS);
+  cache.put(k, String(n), janelaS + 60);
   if (n > max) {
     if (n === max + 1) registrarSeguranca_('limite', { chave });
     throw erro_('limite');
@@ -180,23 +181,31 @@ function chaveSessao_() {
   return s;
 }
 
-// Sessão do QRA: "<qraId>.<posto>.<criada>.<pin>.<assinatura>". O celular não guarda o PIN.
-// Cai sozinha em 16 h, quando o PIN é trocado/removido e quando o QRA dá o QTA.
+// Sessão do QRA: "<qraId>.<posto>.<criada>.<marcaPin>.<assinatura>". O celular não guarda o PIN
+// nem pedaço do hash dele (com 4 números daria para descobrir o PIN): a marca é um HMAC com a chave
+// do servidor. Cai sozinha em 16 h, quando o PIN é trocado/removido e quando o QRA dá o QTA.
+function marcaPin_(pinHash) {
+  return hmac_(`pin.${pinHash}`, chaveSessao_()).slice(0, 16);
+}
+
 function criarSessao_(qraId, p, pinHash) {
-  const base = `${qraId}.${p}.${Date.now()}.${String(pinHash).slice(0, 10)}`;
+  const base = `${qraId}.${p}.${Date.now()}.${marcaPin_(pinHash)}`;
   return `${base}.${hmac_(base, chaveSessao_())}`;
 }
 
-function checarSessao_(req) {
+// capturadoEm (só no evento): o que foi capturado antes do QTA ainda entra com a sessão antiga
+// (fila offline, ou QTA dado de outro celular); o que vem depois do QTA é recusado.
+function checarSessao_(req, capturadoEm) {
   const partes = String(req.sessao || '').split('.');
   if (partes.length !== 5) throw erro_('sessao');
-  const [qraId, p, criada, pin8, ass] = partes;
+  const [qraId, p, criada, marca, ass] = partes;
   if (hmac_(partes.slice(0, 4).join('.'), chaveSessao_()) !== ass || p !== req.p) throw erro_('sessao');
   if (Date.now() - Number(criada) > SESSAO_HORAS * 3600000) throw erro_('sessao');
   const pin = doCache_(`pinh_${qraId}`, 300, () => db_(`procedimentos/pins/${qraId}`));
-  if (!pin || String(pin).slice(0, 10) !== pin8) throw erro_('sessao');
+  if (!pin || marcaPin_(pin) !== marca) throw erro_('sessao');
   const qta = Number(doCache_(`qta_${qraId}`, 300, () => db_(`procedimentos/qta/${qraId}`)) || 0);
-  if (qta > Number(criada)) throw erro_('sessao');
+  const antesDoQta = !!capturadoEm && capturadoEm >= Number(criada) && capturadoEm <= qta;
+  if (qta > Number(criada) && !antesDoQta) throw erro_('sessao');
   const q = doCache_(`qra_${qraId}`, 3600, () => db_(`qras/${qraId}`));
   if (!q) throw erro_('sessao');
   return { id: qraId, nome: String(q.name || qraId) };
@@ -268,14 +277,13 @@ function posto_(req) {
 // Nome + PIN -> sessão assinada (o celular guarda a sessão, nunca o PIN)
 function entrar_(req) {
   checarPosto_(req.p, req.k);
-  const qra = checarPin_(req.qraId, req.pin, req.p);
+  const qra = checarPin_(req.qraId, req.pin, req.p, req.aparelho && req.aparelho.disp);
   if (req.aparelho) registrarSeguranca_('entrada', { p: req.p, qraId: qra.id, qraNome: qra.nome, disp: req.aparelho.disp });
   return { ok: true, agora: Date.now(), qra: { id: qra.id, nome: qra.nome }, sessao: criarSessao_(qra.id, req.p, qra.pinHash) };
 }
 
 function evento_(req) {
   const { post } = checarPosto_(req.p, req.k);
-  const qra = checarSessao_(req);
   if (TIPOS.indexOf(req.tipo) < 0) throw erro_('tipo');
   const midias = Array.isArray(req.midias) ? req.midias.slice(0, MAX_MIDIAS) : [];
   if (PRECISA_IMAGEM.indexOf(req.tipo) >= 0 && !midias.some(m => m && (m.tipo === 'foto' || m.tipo === 'video'))) throw erro_('sem_imagem');
@@ -284,6 +292,7 @@ function evento_(req) {
   // horário da captura (relógio do celular corrigido pelo servidor); fora de 12 h, vale a chegada
   let capturadoEm = Number(req.capturadoEm);
   if (!isFinite(capturadoEm) || capturadoEm > agora + 120000 || capturadoEm < agora - 12 * 3600000) capturadoEm = agora;
+  const qra = checarSessao_(req, capturadoEm);
   const dia = diaOperacional_(new Date(capturadoEm));
 
   const pasta = pastaDoDia_(post.name, req.p, dia);
@@ -520,12 +529,14 @@ function checarPosto_(p, k) {
 }
 
 // PIN de 4 dígitos guardado como SHA-256 de "<qraId>:<pin>". 5 erros = QRA bloqueado 15 min;
-// 20 erros no mesmo posto (tentando vários QRAs) = posto bloqueado 15 min. Bloqueio vai para o painel.
-function checarPin_(qraId, pin, p) {
+// 20 erros no mesmo posto pelo mesmo aparelho (tentando vários QRAs) = esse aparelho travado 15 min
+// no posto. Conta por aparelho do app para que alguém com o link não trave os outros celulares;
+// tudo o que vem pelo navegador (sem app) divide o mesmo contador. Bloqueio vai para o painel.
+function checarPin_(qraId, pin, p, disp) {
   if (!ID_VALIDO.test(String(qraId || ''))) throw erro_('pin');
   const cache = CacheService.getScriptCache();
   const chaveCache = 'pin_' + qraId;
-  const chavePosto = 'pinp_' + p;
+  const chavePosto = `pinp_${p}_${disp || 'web'}`;
   const erros = Number(cache.get(chaveCache) || 0);
   const errosPosto = Number(cache.get(chavePosto) || 0);
   if (erros >= PIN_TENTATIVAS || errosPosto >= POSTO_PIN_ERROS) throw erro_('bloqueado');
@@ -535,7 +546,7 @@ function checarPin_(qraId, pin, p) {
     cache.put(chaveCache, String(erros + 1), PIN_BLOQUEIO_S);
     cache.put(chavePosto, String(errosPosto + 1), PIN_BLOQUEIO_S);
     if (erros + 1 === PIN_TENTATIVAS) registrarSeguranca_('pin_bloqueado', { p, qraId });
-    if (errosPosto + 1 === POSTO_PIN_ERROS) registrarSeguranca_('posto_bloqueado', { p });
+    if (errosPosto + 1 === POSTO_PIN_ERROS) registrarSeguranca_('posto_bloqueado', { p, disp: disp || '' });
     throw erro_('pin');
   }
   cache.remove(chaveCache);

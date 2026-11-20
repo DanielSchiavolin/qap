@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-10-31.10';
+const APP_VERSION = '2026-11-20.1';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 // Registro de segurança (procedimentos/seguranca/<dia>): nome de cada tipo e quais tocam alarme
@@ -132,7 +132,9 @@ class PainelApp {
     this.pararInvHist = null;
     this.eventosPorDia = {};
     this.segPorDia = {};       // registro de segurança de hoje e ontem
-    this.segVistos = null;     // ids já mostrados (null = primeira carga: não alarma o que já existia)
+    this.segVistos = new Set(); // ids já mostrados (não alarma de novo)
+    this.segDiasIniciais = null; // dias escutados ao abrir o painel: o que já existia neles não alarma
+    this.segDiasCarregados = new Set();
     this.segNaoVistos = 0;
     this.sistema = {};         // { exigirApp, pausado }
     this.respostasPorDia = {};  // like / mensagem / áudio da supervisão em cada informe
@@ -169,7 +171,7 @@ class PainelApp {
     this.banco.listen('procedimentos/config', d => { this.cfgs = d; this.carregado.config = true; this.agendarRender(); }, erro);
     this.banco.listen('procedimentos/pins', d => { this.pins = d; this.renderPins(); }, erro);
     this.banco.listen('procedimentos/inventario', d => { this.invs = d; this.agendarRender(); if (this.postoAberto) this.renderInv(); }, erro);
-    this.banco.listen('procedimentos/sistema', d => { this.sistema = d; this.renderSistema(); }, erro);
+    this.banco.listen('procedimentos/sistema', d => { this.sistema = d || {}; this.renderSistema(); }, erro);
     document.getElementById('seg-link-apk').textContent = QAP_APK_URL;
     // painel aberto dentro do app: print bloqueado e avisado também
     qapOuvirSeguranca(async tipo => {
@@ -188,6 +190,7 @@ class PainelApp {
   escutarDias() {
     const hoje = diaOperacional(this.agora());
     const dias = [hoje, addDays(hoje, -1)];
+    if (!this.segDiasIniciais) this.segDiasIniciais = new Set(dias);
     Object.keys(this.escutasDia).forEach(d => {
       if (!dias.includes(d)) {
         this.escutasDia[d]();
@@ -210,6 +213,11 @@ class PainelApp {
       });
       const pararSeg = this.banco.listen(`procedimentos/seguranca/${d}`, data => {
         this.segPorDia[d] = data;
+        // 1ª carga de um dia que já existia ao abrir o painel: só marca como visto (sem alarme)
+        if (!this.segDiasCarregados.has(d)) {
+          this.segDiasCarregados.add(d);
+          if (this.segDiasIniciais.has(d)) Object.keys(data || {}).forEach(id => this.segVistos.add(id));
+        }
         this.renderSeguranca();
       });
       this.escutasDia[d] = () => { pararEventos(); pararRespostas(); pararSeg(); };
@@ -713,14 +721,10 @@ class PainelApp {
     const itens = [];
     Object.keys(this.segPorDia).forEach(d => Object.entries(this.segPorDia[d] || {}).forEach(([id, x]) => { if (x && x.ts) itens.push(Object.assign({ id }, x)); }));
     itens.sort((a, b) => b.ts - a.ts);
-    if (this.segVistos === null) {
-      this.segVistos = new Set(itens.map(x => x.id));
-    } else {
-      const novos = itens.filter(x => !this.segVistos.has(x.id));
-      novos.forEach(x => this.segVistos.add(x.id));
-      const graves = novos.filter(x => (SEG_TIPOS[x.tipo] || {}).alarme);
-      if (graves.length) this.alarmeSeguranca(graves);
-    }
+    const novos = itens.filter(x => !this.segVistos.has(x.id));
+    novos.forEach(x => this.segVistos.add(x.id));
+    const graves = novos.filter(x => (SEG_TIPOS[x.tipo] || {}).alarme);
+    if (graves.length) this.alarmeSeguranca(graves);
     const nomePosto = p => (this.sched.posts[p] || {}).name || p || '';
     document.getElementById('seg-lista').innerHTML = itens.slice(0, 200).map(x => {
       const t = SEG_TIPOS[x.tipo] || { icone: '•', nome: x.tipo };
