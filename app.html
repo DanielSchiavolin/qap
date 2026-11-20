@@ -113,7 +113,7 @@
         mostrarPosto();
         $('colar-link').classList.remove('hidden');
       });
-      $('btn-supervisao').addEventListener('click', () => { location.href = `${BASE}index.html${sufixoTeste ? `?${sufixoTeste}` : ''}`; });
+      $('btn-supervisao').addEventListener('click', () => { location.href = `${BASE}index.html?${sufixoTeste || 'entrar=1'}`; }); // entrar=1: pede a senha sempre
 
       $('fora-do-app').classList.toggle('hidden', QAP_NATIVO || QAP_APP_FALSO);
       mostrarPosto();

@@ -3,6 +3,12 @@
 // O banco só aceita a conta da equipe; o app só inicia depois que ela entra no aparelho.
 // O login fica salvo no navegador, então a senha é pedida uma vez por aparelho.
 // A senha NÃO fica no código: ela é conferida pelo Firebase Authentication.
+//
+// Só no QAP (os outros apps não passam opções): AuthGate.start(config, { sempre, naoGuardar, voltar })
+// - sempre: pede a senha toda vez, mesmo com login salvo (entrada pelo botão Supervisão do app)
+// - naoGuardar: o login não fica salvo no aparelho e o que estava salvo é apagado (dentro do app
+//   Android, que roda no celular do posto)
+// - voltar: endereço do botão "Voltar" na tela de senha
 // ============================================================
 (function () {
   const TEAM_EMAIL = 'schiavolindaniel@gmail.com';
@@ -33,9 +39,12 @@
       background: #F5A623; color: #1B2A4A; cursor: pointer; }
     #auth-gate button:disabled { opacity: .6; cursor: wait; }
     #auth-gate .ag-error { min-height: 1.2em; margin-top: 10px; font-size: .85rem; color: #ff7b6b; }
+    #auth-gate a.ag-voltar { display: block; margin-top: 12px; text-align: center; font-size: .9rem; color: rgba(255,255,255,.8); }
   `;
 
   let overlay = null;
+  let entrando = false; // a senha acabou de ser digitada nesta tela
+  let voltarUrl = '';
 
   function buildOverlay() {
     if (overlay) return overlay;
@@ -54,8 +63,14 @@
         <label class="ag-show"><input type="checkbox" style="width:auto;margin:0"> Mostrar senha</label>
         <button type="submit">Entrar</button>
         <div class="ag-error" role="alert"></div>
+        <a class="ag-voltar" hidden>← Voltar</a>
       </form>`;
     document.body.appendChild(overlay);
+    if (voltarUrl) {
+      const v = overlay.querySelector('.ag-voltar');
+      v.href = voltarUrl;
+      v.hidden = false;
+    }
 
     const form = overlay.querySelector('form');
     const pwd = overlay.querySelector('input[type=password]');
@@ -70,9 +85,11 @@
       btn.disabled = true;
       btn.textContent = 'Entrando...';
       try {
+        entrando = true;
         await firebase.auth().signInWithEmailAndPassword(TEAM_EMAIL, pwd.value);
         pwd.value = '';
       } catch (ex) {
+        entrando = false;
         err.textContent = ERRORS[ex && ex.code] || `Não foi possível entrar (${(ex && ex.code) || 'erro'}).`;
       } finally {
         btn.disabled = false;
@@ -95,23 +112,33 @@
     TEAM_EMAIL,
 
     // Resolves once the team account is signed in on this device; the app starts after that.
-    start(config) {
+    start(config, opts) {
+      const o = opts || {};
+      const sempre = !!(o.sempre || o.naoGuardar);
+      voltarUrl = o.voltar || '';
       if (!firebase.apps.length) firebase.initializeApp(config);
       const auth = firebase.auth();
+      const pronto = o.naoGuardar
+        ? auth.setPersistence(firebase.auth.Auth.Persistence.NONE).catch(() => {})
+        : Promise.resolve();
       return new Promise((resolve) => {
         let started = false;
-        auth.onAuthStateChanged((user) => {
-          if (user && user.email === TEAM_EMAIL) {
+        pronto.then(() => auth.onAuthStateChanged((user) => {
+          const daEquipe = user && user.email === TEAM_EMAIL;
+          // "sempre": login que já estava salvo não vale, só a senha digitada agora
+          if (daEquipe && (!sempre || entrando || started)) {
             hide();
             if (!started) { started = true; resolve(user); }
           } else if (started) {
             // Signed out while the app was open: restart cleanly at the password screen
             location.reload();
           } else {
-            if (user) auth.signOut();
+            // conta errada sempre sai; login salvo da equipe só é apagado com naoGuardar
+            // (no navegador ele é o mesmo dos outros apps da Front Security)
+            if (user && (!daEquipe || o.naoGuardar)) auth.signOut();
             show();
           }
-        });
+        }));
       });
     },
 

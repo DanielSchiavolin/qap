@@ -6,7 +6,7 @@
 // ============================================================
 
 // Mudar junto com version.json a cada publicação
-const APP_VERSION = '2026-11-20.1';
+const APP_VERSION = '2026-11-20.2';
 const ORDEM_SITUACAO = ['atrasado', 'pausa_longa', 'vence', 'pausa', 'ok', 'desligado', 'fora'];
 const SOM_REPETE_MS = 60000;
 // Registro de segurança (procedimentos/seguranca/<dia>): nome de cada tipo e quais tocam alarme
@@ -755,6 +755,19 @@ class PainelApp {
 
   // ----- Diversos -----
 
+  // Sai da conta da equipe neste aparelho: a próxima entrada pede a senha
+  async sairDoPainel() {
+    const aviso = QAP_NATIVO || QAP_MOCK
+      ? 'Sair do painel da supervisão neste aparelho?'
+      : 'Sair do painel neste navegador? A senha da equipe será pedida de novo aqui, inclusive nos outros apps da Front Security abertos neste navegador.';
+    if (!await this.confirmar(aviso, 'Sair')) return;
+    const inicio = QAP_MOCK ? 'app.html?mock=1&app=1' : 'app.html';
+    if (QAP_MOCK) { location.href = inicio; return; }
+    try { await AuthGate.signOut(); } catch (e) { this.toast('❌ Não deu para sair. Tente de novo.', 'error'); return; }
+    // no navegador o AuthGate recarrega na tela de senha; no app volta para a tela inicial
+    if (QAP_NATIVO) location.replace(inicio);
+  }
+
   async gravar(promessa, msgOk) {
     try {
       await promessa;
@@ -881,6 +894,7 @@ class PainelApp {
       this.renderFeed();
     }));
     document.getElementById('confirma-sim').addEventListener('click', () => this.responderConfirma(true));
+    document.getElementById('btn-sair-painel').addEventListener('click', () => this.sairDoPainel());
     document.getElementById('seg-exigir').addEventListener('change', e => this.mudarSistema('exigirApp', e.target.checked));
     document.getElementById('seg-pausar').addEventListener('change', e => this.mudarSistema('pausado', e.target.checked));
     document.getElementById('seg-segredo').addEventListener('click', () => this.mostrarSegredo());
@@ -913,5 +927,9 @@ class PainelApp {
 
 document.addEventListener('DOMContentLoaded', () => {
   if (QAP_MOCK) { new PainelApp(new BancoMock()).init(); return; }
-  AuthGate.start(QAP_CONFIG.firebase).then(() => new PainelApp(new BancoFirebase()).init());
+  // Pelo botão Supervisão do app (index.html?entrar=1) a senha é pedida sempre. Dentro do app
+  // Android (celular do posto) o login nunca fica salvo.
+  const peloApp = new URLSearchParams(location.search).get('entrar') === '1';
+  AuthGate.start(QAP_CONFIG.firebase, { sempre: peloApp || QAP_NATIVO, naoGuardar: QAP_NATIVO, voltar: peloApp || QAP_NATIVO ? 'app.html' : '' })
+    .then(() => new PainelApp(new BancoFirebase()).init());
 });
